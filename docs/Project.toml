@@ -1,0 +1,6 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+JCGEOutput = "d375a7b0-530a-4732-94fc-3dc39a3a1ffd"
+
+[sources]
+JCGEOutput = { path = ".." }

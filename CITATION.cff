@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+title: JCGEOutput.jl - Equation rendering and results handling for JCGE.jl.
+message: >-
+  v0.1.0 - Initial public release.
+type: software
+doi: ''
+authors:
+  - given-names: Riccardo
+    family-names: Boero
+    email: ribo@nilu.no
+    orcid: 'https://orcid.org/0000-0002-7468-9096'
+    affiliation: NILU
+identifiers:
+  - type: doi
+    value: ''
+    description: This DOI represents all software versions.
+repository-code: 'https://github.com/equicirco/JCGEOutput.jl'
+url: 'https://equicirco.github.io/JCGEOutput.jl/'
+abstract: >-
+  JCGEOutput.jl renders equation systems, collects results, and exports outputs in machine- and human-readable formats.
+keywords:
+  - Computable General Equilibrium
+  - CGE
+  - Economic Modeling
+  - General Equilibrium
+  - Julia Language
+  - Scientific Computing
+  - Modeling Framework
+  - Numerical Optimization
+license: Apache-2.0
