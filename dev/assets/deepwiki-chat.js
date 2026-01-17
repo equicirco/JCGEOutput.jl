@@ -1,7 +1,7 @@
 (() => {
   const baseUrl = "https://mcp.deepwiki.com";
   const protocolVersion = "2024-11-05";
-  const defaultRepoName = null;
+  const defaultRepoName = "equicirco/JCGEOutput.jl";
 
   if (document.getElementById("dw-chat-root")) {
     return;
@@ -116,28 +116,7 @@
   const statusEl = root.querySelector(".dw-status");
   const subtitleEl = root.querySelector("[data-dw-subtitle]");
 
-  const resolveRepoName = () => {
-    const githubLink = Array.from(document.querySelectorAll("a[href]")).find((link) => {
-      return /https?:\/\/github\.com\/[^/]+\/[^/]+/.test(link.href);
-    });
-
-    if (githubLink) {
-      const match = githubLink.href.match(/github\.com\/([^/]+)\/([^/#?]+)(?:\.git)?/);
-      if (match) {
-        return `${match[1]}/${match[2]}`;
-      }
-    }
-
-    const hostMatch = window.location.hostname.match(/^([^.]+)\.github\.io$/);
-    if (hostMatch) {
-      const parts = window.location.pathname.split("/").filter(Boolean);
-      if (parts.length > 0) {
-        return `${hostMatch[1]}/${parts[0]}`;
-      }
-    }
-
-    return defaultRepoName;
-  };
+  const resolveRepoName = () => defaultRepoName;
 
   const repoName = resolveRepoName();
   const deepwikiUrl = repoName ? `https://deepwiki.com/${repoName}` : null;
