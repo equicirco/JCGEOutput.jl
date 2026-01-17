@@ -297,7 +297,6 @@ version = "0.1.0"
 [[deps.JCGERuntime]]
 deps = ["DualSignals", "JCGECore", "JuMP", "Test"]
 git-tree-sha1 = "f109d17ed91cbfb1fc6fc2a47b3050acd5b900bf"
-repo-rev = "main"
 repo-url = "https://github.com/equicirco/JCGERuntime.jl"
 uuid = "cc244198-1562-43f7-ad75-589e1d675269"
 version = "0.1.0"

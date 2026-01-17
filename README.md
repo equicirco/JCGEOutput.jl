@@ -10,10 +10,47 @@
 A Computable General Equilibrium (CGE) model is a quantitative economic model that represents an economy as interconnected markets for goods and services, factors of production, institutions, and the rest of the world. It is calibrated with data (typically a Social Accounting Matrix) and solved numerically as a system of nonlinear equations until equilibrium conditions (zero-profit, market-clearing, and income-balance) hold within tolerance.
 
 ## What is JCGE?
-JCGE is a block-based CGE modeling and execution framework in Julia. It defines a shared RunSpec structure and reusable blocks so models can be assembled, validated, solved, and compared consistently across packages.
+JCGE is a block-based CGE modeling and execution framework in Julia ([jcge.org](https://jcge.org)). It defines a shared RunSpec structure and reusable blocks so models can be assembled, validated, solved, and compared consistently across packages.
 
 ## What is this package?
-Backend-agnostic output and reporting utilities for JCGE.
+Backend-agnostic output and reporting utilities for JCGE ([jcge.org](https://jcge.org)).
+
+## How to cite
+
+If you use the JCGE framework, please cite:
+
+Boero, R. *JCGE - Julia Computable General Equilibrium Framework* [software], 2026.
+DOI: 10.5281/zenodo.18282436
+URL: https://JCGE.org
+
+```bibtex
+@software{boero_jcge_2026,
+  title  = {JCGE - Julia Computable General Equilibrium Framework},
+  author = {Boero, Riccardo},
+  year   = {2026},
+  doi    = {10.5281/zenodo.18282436},
+  url    = {https://JCGE.org}
+}
+```
+
+If you use this package, please cite:
+
+Boero, R. *JCGEOutput.jl - Equation rendering and results handling for JCGE.* [software], 2026.
+DOI: (not assigned)
+URL: https://Output.JCGE.org
+SourceCode: https://github.com/equicirco/JCGEOutput.jl
+
+```bibtex
+@software{boero_jcgeoutput_jl_2026,
+  title  = {JCGEOutput.jl - Equation rendering and results handling for JCGE.},
+  author = {Boero, Riccardo},
+  year   = {2026},
+  doi    = {},
+  url    = {https://Output.JCGE.org}
+}
+```
+
+If you use a specific tagged release, please cite the version DOI assigned on Zenodo for that release (preferred for exact reproducibility).
 
 ## 1) Equation and block rendering (model introspection)
 

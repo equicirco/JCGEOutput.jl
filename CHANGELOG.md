@@ -12,8 +12,9 @@ Security: For vulnerabilities.
 
 ## [0.1.0] - unreleased
 ### Added
-- Project layout and package boundaries.
-- Initial block-based modeling interfaces and RunSpec structure.
-- Calibration and output utilities with canonical data schema.
-- Example models and integration tests.
-- Documentation scaffolding and package docs.
+- JCGEOutput package layout with entry points for exporting model runs.
+- Block-based output interfaces and `RunSpec` to drive report generation.
+- Output writers for CSV, Arrow, and Parquet using a shared table schema.
+- Calibration/output helpers aligned with JCGECore and JCGERuntime data structures.
+- Example outputs and integration tests covering end-to-end export flows.
+- Documentation scaffolding for package usage and output formats.
