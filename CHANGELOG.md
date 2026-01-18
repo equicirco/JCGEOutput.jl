@@ -10,7 +10,7 @@ Removed: For features removed in this release.
 Fixed: For any bug fixes.
 Security: For vulnerabilities.
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-01-18
 ### Added
 - JCGEOutput package layout with entry points for exporting model runs.
 - Block-based output interfaces and `RunSpec` to drive report generation.
