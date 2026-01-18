@@ -19,7 +19,7 @@ URL: https://JCGE.org
 If you use this package, please cite:
 
 Boero, R. *JCGEOutput.jl - Equation rendering and results handling for JCGE.* [software], 2026.
-DOI: (not assigned)
+DOI: 10.5281/zenodo.18290750
 URL: https://Output.JCGE.org
 SourceCode: https://github.com/equicirco/JCGEOutput.jl
 
@@ -28,7 +28,7 @@ SourceCode: https://github.com/equicirco/JCGEOutput.jl
   title  = {JCGEOutput.jl - Equation rendering and results handling for JCGE.},
   author = {Boero, Riccardo},
   year   = {2026},
-  doi    = {},
+  doi    = {10.5281/zenodo.18290750},
   url    = {https://Output.JCGE.org}
 }
 ```
