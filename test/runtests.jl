@@ -27,6 +27,23 @@ using Test
         @test !occursin("q = sum(x)", block_rendered)
     end
 
+    @testset "equation AST rendering" begin
+        @test render_expr(ELe(EVar(:x), EConst(2)); format=:plain) == "x <= 2"
+        @test render_expr(EGe(ELog(EVar(:x)), EConst(0)); format=:plain) == "log(x) >= 0"
+        @test render_expr(ELe(ELog(EAdd([EVar(:x), EConst(1)])), EConst(3)); format=:latex) ==
+              "\\log\\left(x + 1\\right) \\le 3"
+
+        ctx = KernelContext()
+        expr = ELe(ESum(:i, [:a, :b], EVar(:x, [EIndex(:i)])), EConst(10))
+        register_equation!(ctx; tag=:limit, block=:market,
+            payload=(indices=(), expr=expr, constraint=nothing))
+
+        rendered = render_equations(ctx; format=:markdown, level=:equation)
+        @test occursin("\\le", rendered)
+        @test occursin("\\sum_{i \\in \\mathcal{D}_{i}}", rendered)
+        @test occursin("Domain i in { a, b }", rendered)
+    end
+
     @testset "render_symbols and render_blocks" begin
         ctx = KernelContext()
         register_variable!(ctx, :x, 1.0)

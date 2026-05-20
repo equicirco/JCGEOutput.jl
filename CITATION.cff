@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 title: JCGEOutput.jl - Equation rendering and results handling for JCGE.
 message: >-
-  v0.1.0 - Initial public release.
+  v0.1.1 - Render JCGECore inequality and logarithm expression nodes.
 type: software
 doi: 10.5281/zenodo.18290750
 authors:

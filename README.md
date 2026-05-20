@@ -184,7 +184,9 @@ Limitations:
   implicitly by row/column sums and is not auto-corrected.
 
 Status: rendering API available (equations/blocks and symbol tables from KernelContext or run result).
-Blocks should attach `payload.expr::EquationExpr` (from `JCGECore`); `ERaw(info)` is an acceptable fallback while blocks are upgraded.
+Blocks should attach `payload.expr::EquationExpr` (from `JCGECore`); equality,
+inequality, and logarithm nodes are rendered directly, while `ERaw(info)` is an
+acceptable fallback while blocks are upgraded.
 
 ## AST example (equation rendering)
 

@@ -8,7 +8,7 @@ using JCGECalibrate
 using Arrow
 using CSV
 using JSON3
-using JCGECore: EquationExpr, EIndex, EVar, EParam, EConst, EAdd, EMul, EPow, EDiv, ENeg, ESum, EProd, EEq, ERaw
+using JCGECore: EquationExpr, EIndex, EVar, EParam, EConst, EAdd, EMul, EPow, EDiv, ENeg, ELog, ESum, EProd, EEq, ELe, EGe, ERaw
 using JCGERuntime
 using Dates
 using JuMP
@@ -24,7 +24,7 @@ export to_arrow, to_parquet
 export to_dualsignals, write_dualsignals_json, write_dualsignals_csv
 export sam_from_solution, write_sam_csv
 export DEFAULT_CONSTRAINT_KIND_TAG_MAP, constraint_kind_enum, component_type_enum
-export EquationExpr, EIndex, EVar, EParam, EConst, EAdd, EMul, EPow, EDiv, ENeg, ESum, EProd, EEq, ERaw
+export EquationExpr, EIndex, EVar, EParam, EConst, EAdd, EMul, EPow, EDiv, ENeg, ELog, ESum, EProd, EEq, ELe, EGe, ERaw
 export render_expr
 
 """
@@ -1502,9 +1502,9 @@ function _collect_domains!(domains::Vector{Pair{String,Vector{String}}}, expr::E
     elseif expr isa EDiv
         _collect_domains!(domains, expr.numerator)
         _collect_domains!(domains, expr.denominator)
-    elseif expr isa ENeg
+    elseif expr isa ENeg || expr isa ELog
         _collect_domains!(domains, expr.expr)
-    elseif expr isa EEq
+    elseif expr isa EEq || expr isa ELe || expr isa EGe
         _collect_domains!(domains, expr.lhs)
         _collect_domains!(domains, expr.rhs)
     end
@@ -1678,6 +1678,12 @@ function _render_expr(expr::EquationExpr; format::Symbol)
     elseif expr isa ENeg
         inner = _wrap_if_needed(expr.expr, _render_expr(expr.expr; format=format); format=format)
         return string("-", inner)
+    elseif expr isa ELog
+        inner = _render_expr(expr.expr; format=format)
+        if format == :latex
+            return string("\\log\\left(", inner, "\\right)")
+        end
+        return string("log(", inner, ")")
     elseif expr isa ESum
         inner = _render_expr(expr.expr; format=format)
         if format == :latex
@@ -1698,6 +1704,16 @@ function _render_expr(expr::EquationExpr; format::Symbol)
         lhs = _render_expr(expr.lhs; format=format)
         rhs = _render_expr(expr.rhs; format=format)
         return string(lhs, " = ", rhs)
+    elseif expr isa ELe
+        lhs = _render_expr(expr.lhs; format=format)
+        rhs = _render_expr(expr.rhs; format=format)
+        op = format == :latex ? " \\le " : " <= "
+        return string(lhs, op, rhs)
+    elseif expr isa EGe
+        lhs = _render_expr(expr.lhs; format=format)
+        rhs = _render_expr(expr.rhs; format=format)
+        op = format == :latex ? " \\ge " : " >= "
+        return string(lhs, op, rhs)
     else
         return string(expr)
     end
