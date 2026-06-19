@@ -44,6 +44,24 @@ using Test
         @test occursin("Domain i in { a, b }", rendered)
     end
 
+    @testset "objective rendering" begin
+        ctx = KernelContext()
+        register_equation!(ctx; tag=:objective, block=:single_objective,
+            payload=(indices=(),
+                info="household utility objective under fiscal closure",
+                objective_expr=EAdd([ELog(EVar(:x)), ELog(EVar(:y))]),
+                objective_sense=:Max,
+                constraint=nothing))
+
+        plain = render_equations(ctx; format=:plain, level=:equation)
+        @test occursin("single_objective.objective", plain)
+        @test occursin("max log(x) + log(y)", plain)
+
+        markdown = render_equations(ctx; format=:markdown, level=:equation)
+        @test occursin("\\max\\;", markdown)
+        @test occursin("\\log\\left(x\\right) + \\log\\left(y\\right)", markdown)
+    end
+
     @testset "render_symbols and render_blocks" begin
         ctx = KernelContext()
         register_variable!(ctx, :x, 1.0)

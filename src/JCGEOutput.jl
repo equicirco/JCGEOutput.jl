@@ -1538,6 +1538,14 @@ function _equation_info(eq; format::Symbol)
             end
             return string(expr), false
         end
+        objective_expr = get(payload, :objective_expr, nothing)
+        if objective_expr !== nothing
+            if objective_expr isa EquationExpr
+                sense = get(payload, :objective_sense, :Max)
+                return _render_objective_expr(objective_expr, sense; format=format), true
+            end
+            return string(objective_expr), false
+        end
         info = get(payload, :info, nothing)
         if info === nothing
             constraint = get(payload, :constraint, nothing)
@@ -1549,6 +1557,34 @@ function _equation_info(eq; format::Symbol)
     else
         return string(payload), false
     end
+end
+
+function _render_objective_expr(expr::EquationExpr, sense; format::Symbol)
+    rendered = render_expr(expr; format=format)
+    if format == :latex || format == :markdown
+        prefix = _objective_prefix_latex(sense)
+        return string(prefix, rendered)
+    end
+    prefix = _objective_prefix_plain(sense)
+    return string(prefix, rendered)
+end
+
+function _objective_prefix_latex(sense)
+    return _objective_is_min(sense) ? "\\min\\;" : "\\max\\;"
+end
+
+function _objective_prefix_plain(sense)
+    return _objective_is_min(sense) ? "min " : "max "
+end
+
+function _objective_is_min(sense)
+    if sense isa Symbol
+        return sense in (:Min, :min, :MIN, :Minimize, :minimize, :MINIMIZE)
+    elseif sense isa AbstractString
+        lowered = lowercase(sense)
+        return lowered in ("min", "minimize")
+    end
+    return false
 end
 
 function _equation_label(eq)
