@@ -10,6 +10,12 @@ Removed: For features removed in this release.
 Fixed: For any bug fixes.
 Security: For vulnerabilities.
 
+## [0.1.3] - 2026-07-16
+### Added
+- Closure-condition roles in equation rendering, with optional role labels.
+- Post-solution accounting-check residuals in `Results`, tidy exports, JSON,
+  CSV, Arrow, Parquet, and DualSignals outputs.
+
 ## [0.1.2] - 2026-06-19
 ### Added
 - Rendering of objective functions.

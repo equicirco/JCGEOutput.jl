@@ -35,6 +35,7 @@ Fields:
 - `reduced_costs`: reduced costs by symbol.
 - `duals`: vector of (block, tag, indices, value).
 - `complements`: complementarity diagnostics for MCP equations.
+- `accounting_checks`: residuals for closure conditions evaluated after solving.
 - `metadata`: solver and scenario metadata.
 """
 struct Results
@@ -42,13 +43,20 @@ struct Results
     reduced_costs::Dict{Symbol,Float64}
     duals::Vector{NamedTuple}
     complements::Vector{NamedTuple}
+    accounting_checks::Vector{NamedTuple}
     metadata::Dict{Symbol,Any}
 end
+
+Results(primals::Dict{Symbol,Float64}, reduced_costs::Dict{Symbol,Float64},
+    duals::Vector{NamedTuple}, complements::Vector{NamedTuple},
+    metadata::Dict{Symbol,Any}) =
+    Results(primals, reduced_costs, duals, complements, NamedTuple[], metadata)
 
 """
     collect_results(obj; metadata=Dict()) -> Results
 
-Collect primals, reduced costs, duals, and complementarity diagnostics
+Collect primals, reduced costs, duals, complementarity diagnostics, and
+post-solution accounting checks
 from a `KernelContext`, `RunSpec` result, or equivalent object.
 """
 function collect_results(obj; metadata=Dict{Symbol,Any}())
@@ -57,6 +65,7 @@ function collect_results(obj; metadata=Dict{Symbol,Any}())
     reduced_costs = Dict{Symbol,Float64}()
     duals = NamedTuple[]
     complements = NamedTuple[]
+    accounting_checks = NamedTuple[]
 
     model = ctx.model
     if model isa JuMP.Model
@@ -128,6 +137,16 @@ function collect_results(obj; metadata=Dict{Symbol,Any}())
         end
     end
 
+    for entry in JCGERuntime.equation_residuals(ctx)
+        entry.role == :accounting_check || continue
+        push!(accounting_checks, (
+            block=entry.block,
+            tag=entry.tag,
+            indices=entry.indices,
+            residual=entry.residual,
+        ))
+    end
+
     meta = Dict{Symbol,Any}()
     meta[:timestamp] = Dates.now()
     if model isa JuMP.Model
@@ -141,7 +160,7 @@ function collect_results(obj; metadata=Dict{Symbol,Any}())
         meta[k] = v
     end
 
-    return Results(primals, reduced_costs, duals, complements, meta)
+    return Results(primals, reduced_costs, duals, complements, accounting_checks, meta)
 end
 
 """
@@ -149,7 +168,9 @@ end
 
 Return a long-table representation of results suitable for CSV/Arrow/Parquet.
 """
-function tidy(results::Results; kinds=(:level, :dual, :reduced_cost, :complement), encode_indices::Bool=false)
+function tidy(results::Results;
+    kinds=(:level, :dual, :reduced_cost, :complement, :accounting_check),
+    encode_indices::Bool=false)
     rows = NamedTuple[]
     if :level in kinds
         for (name, val) in results.primals
@@ -174,6 +195,17 @@ function tidy(results::Results; kinds=(:level, :dual, :reduced_cost, :complement
             push!(rows, (symbol=string(sym), index_tuple=_index_field(Tuple(entry.indices), encode_indices), value=value, kind=:complement))
         end
     end
+    if :accounting_check in kinds
+        for entry in results.accounting_checks
+            sym = Symbol(string(entry.block), ".", string(entry.tag))
+            push!(rows, (
+                symbol=string(sym),
+                index_tuple=_index_field(Tuple(entry.indices), encode_indices),
+                value=entry.residual,
+                kind=:accounting_check,
+            ))
+        end
+    end
     return rows
 end
 
@@ -189,6 +221,7 @@ function to_json(results::Results, path::AbstractString)
         reduced_costs=_stringify_keys(results.reduced_costs),
         duals=results.duals,
         complements=results.complements,
+        accounting_checks=results.accounting_checks,
         tidy=tidy(results),
     )
     open(path, "w") do io
@@ -202,7 +235,8 @@ end
 
 Write a tidy table to CSV.
 """
-function to_csv(results::Results, path::AbstractString; kinds=(:level, :dual, :reduced_cost, :complement))
+function to_csv(results::Results, path::AbstractString;
+    kinds=(:level, :dual, :reduced_cost, :complement, :accounting_check))
     rows = tidy(results; kinds=kinds, encode_indices=true)
     if isempty(rows)
         open(path, "w") do io
@@ -219,7 +253,8 @@ end
 
 Write a tidy table to Arrow.
 """
-function to_arrow(results::Results, path::AbstractString; kinds=(:level, :dual, :reduced_cost, :complement))
+function to_arrow(results::Results, path::AbstractString;
+    kinds=(:level, :dual, :reduced_cost, :complement, :accounting_check))
     rows = tidy(results; kinds=kinds, encode_indices=true)
     Arrow.write(path, rows)
     return path
@@ -230,7 +265,8 @@ end
 
 Write a tidy table to Parquet.
 """
-function to_parquet(results::Results, path::AbstractString; kinds=(:level, :dual, :reduced_cost, :complement))
+function to_parquet(results::Results, path::AbstractString;
+    kinds=(:level, :dual, :reduced_cost, :complement, :accounting_check))
     rows = tidy(results; kinds=kinds, encode_indices=true)
     parquet_rows = [
         (
@@ -261,7 +297,8 @@ function results_from_json(path::AbstractString)
     reduced = _symbol_dict(get(data, "reduced_costs", Dict{String,Any}()))
     duals = _namedtuple_list(get(data, "duals", Any[]))
     complements = _namedtuple_list(get(data, "complements", Any[]))
-    return Results(primals, reduced, duals, complements, metadata)
+    accounting_checks = _namedtuple_list(get(data, "accounting_checks", Any[]))
+    return Results(primals, reduced, duals, complements, accounting_checks, metadata)
 end
 
 """
@@ -363,6 +400,31 @@ function to_dualsignals(results::Results; dataset_id::String="jcge",
             dual=dual,
             slack=slack,
             is_binding=slack === nothing ? nothing : slack <= 1e-8,
+            scenario=scenario,
+        ))
+    end
+
+    for entry in results.accounting_checks
+        block = entry.block
+        section = get(section_map, block, nothing)
+        component_id = string(block)
+        component_type = _component_type(block; section=section, overrides=component_type_by_block, section_overrides=component_type_by_section)
+        _ensure_component!(components, component_id, component_type)
+        constraint_id = _constraint_id(block, entry.tag, entry.indices)
+        kind = _constraint_kind(block, entry.tag; section=section, tag_overrides=constraint_kind_by_tag,
+            block_overrides=constraint_kind_by_block, section_overrides=constraint_kind_by_section)
+        push!(constraints, DualSignals.Constraint(
+            constraint_id=constraint_id,
+            kind=kind,
+            sense=_constraint_sense_enum(:eq),
+            component_ids=[component_id],
+        ))
+        slack = abs(entry.residual)
+        push!(solutions, DualSignals.ConstraintSolution(
+            constraint_id=constraint_id,
+            dual=0.0,
+            slack=slack,
+            is_binding=slack <= 1e-8,
             scenario=scenario,
         ))
     end
@@ -673,7 +735,8 @@ function write_dualsignals_csv(obj::NamedTuple, dir::AbstractString; prefix::Abs
 end
 
 """
-    render_equations(obj; format=:markdown, level=:block, show_defs=true)
+    render_equations(obj; format=:markdown, level=:block, show_defs=true,
+        show_condition_roles=false)
 
 Render equations registered in a `KernelContext` or run result.
 
@@ -683,30 +746,36 @@ Inputs
 - `format`: `:markdown`, `:latex`, or `:plain`.
 - `level`: `:block` to group equations by block, or `:equation` for a flat list.
 - `show_defs`: include equation labels and block tags.
+- `show_condition_roles`: append each equation's closure role to its label.
 
 Returns a formatted string. The output is derived from the equation AST, not
 solver-specific objects, so it is backend-agnostic.
 """
-function render_equations(obj; format::Symbol=:markdown, level::Symbol=:block, show_defs::Bool=true)
+function render_equations(obj; format::Symbol=:markdown, level::Symbol=:block,
+    show_defs::Bool=true, show_condition_roles::Bool=false)
     ctx = _context(obj)
     eqs = JCGERuntime.list_equations(ctx)
-    return _render_equations(eqs; format=format, level=level, show_defs=show_defs)
+    return _render_equations(eqs; format=format, level=level, show_defs=show_defs,
+        show_condition_roles=show_condition_roles)
 end
 
 """
-    render_block(obj, block_id; format=:markdown, show_defs=true)
+    render_block(obj, block_id; format=:markdown, show_defs=true,
+        show_condition_roles=false)
 
 Render equations for one block.
 
 `block_id` can be a `Symbol` or a string-like identifier; it is converted to a
 `Symbol` and matched against `EquationInfo.block` entries.
 """
-function render_block(obj, block_id; format::Symbol=:markdown, show_defs::Bool=true)
+function render_block(obj, block_id; format::Symbol=:markdown, show_defs::Bool=true,
+    show_condition_roles::Bool=false)
     ctx = _context(obj)
     eqs = JCGERuntime.list_equations(ctx)
     block_sym = Symbol(block_id)
     eqs_block = filter(eq -> eq.block == block_sym, eqs)
-    return _render_equations(eqs_block; format=format, level=:equation, show_defs=show_defs)
+    return _render_equations(eqs_block; format=format, level=:equation,
+        show_defs=show_defs, show_condition_roles=show_condition_roles)
 end
 
 """
@@ -1169,6 +1238,7 @@ function results_from_table(tbl)
     reduced = Dict{Symbol,Float64}()
     duals = NamedTuple[]
     complements = NamedTuple[]
+    accounting_checks = NamedTuple[]
 
     cols = Tables.columntable(tbl)
     symbols = get(cols, :symbol, String[])
@@ -1190,9 +1260,12 @@ function results_from_table(tbl)
             push!(duals, (block=block, tag=tag, indices=indices, value=value))
         elseif kind == :complement
             push!(complements, (block=:mcp, tag=sym, indices=indices, var=sym, value=value, residual=nothing))
+        elseif kind == :accounting_check
+            block, tag = _split_symbol(sym)
+            push!(accounting_checks, (block=block, tag=tag, indices=indices, residual=value))
         end
     end
-    return Results(primals, reduced, duals, complements, Dict{Symbol,Any}())
+    return Results(primals, reduced, duals, complements, accounting_checks, Dict{Symbol,Any}())
 end
 
 function _index_field(indices::Tuple, encode::Bool)
@@ -1269,7 +1342,8 @@ function _stringify_keys(dict)
     return out
 end
 
-function _render_equations(eqs; format::Symbol, level::Symbol, show_defs::Bool)
+function _render_equations(eqs; format::Symbol, level::Symbol, show_defs::Bool,
+    show_condition_roles::Bool)
     if level != :block && level != :equation
         error("Unsupported level: $(level). Use :block or :equation")
     end
@@ -1295,11 +1369,13 @@ function _render_equations(eqs; format::Symbol, level::Symbol, show_defs::Bool)
             push!(by_block[eq.block], eq)
         end
         for (block, block_eqs) in sort(collect(by_block); by=first)
-            append!(lines, _render_block_section(block, block_eqs; format=format, show_defs=show_defs))
+            append!(lines, _render_block_section(block, block_eqs; format=format,
+                show_defs=show_defs, show_condition_roles=show_condition_roles))
         end
     else
         for eq in eqs
-            push!(lines, _render_equation_line(eq; format=format, show_defs=show_defs))
+            push!(lines, _render_equation_line(eq; format=format, show_defs=show_defs,
+                show_condition_roles=show_condition_roles))
         end
     end
     return join(lines, "\n")
@@ -1407,11 +1483,12 @@ function _render_symbol_table_plain(rows; show_values::Bool)
 end
 
 """
-    _render_block_section(block, eqs; format, show_defs)
+    _render_block_section(block, eqs; format, show_defs, show_condition_roles)
 
 Render a block heading followed by its equations.
 """
-function _render_block_section(block, eqs; format::Symbol, show_defs::Bool)
+function _render_block_section(block, eqs; format::Symbol, show_defs::Bool,
+    show_condition_roles::Bool)
     lines = String[]
     header = "Block: $(block)"
     if format == :markdown
@@ -1422,17 +1499,19 @@ function _render_block_section(block, eqs; format::Symbol, show_defs::Bool)
         push!(lines, header)
     end
     for eq in eqs
-        push!(lines, _render_equation_line(eq; format=format, show_defs=show_defs))
+        push!(lines, _render_equation_line(eq; format=format, show_defs=show_defs,
+            show_condition_roles=show_condition_roles))
     end
     return lines
 end
 
 """
-    _render_equation_line(eq; format, show_defs)
+    _render_equation_line(eq; format, show_defs, show_condition_roles)
 
 Render a single equation line with label and optional domain annotations.
 """
-function _render_equation_line(eq; format::Symbol, show_defs::Bool)
+function _render_equation_line(eq; format::Symbol, show_defs::Bool,
+    show_condition_roles::Bool)
     info, is_math = _equation_info(eq; format=format)
     domains = Pair{String,Vector{String}}[]
     if format == :markdown
@@ -1440,7 +1519,7 @@ function _render_equation_line(eq; format::Symbol, show_defs::Bool)
     end
     label = ""
     if show_defs
-        label = _equation_label(eq)
+        label = _equation_label(eq; show_condition_role=show_condition_roles)
     end
     if format == :markdown
         if is_math
@@ -1587,17 +1666,21 @@ function _objective_is_min(sense)
     return false
 end
 
-function _equation_label(eq)
+function _equation_label(eq; show_condition_role::Bool=false)
     payload = eq.payload
     idxs = ()
     if payload isa NamedTuple && haskey(payload, :indices)
         idxs = payload.indices
     end
     idx_text = _format_indices(idxs)
-    if isempty(idx_text)
-        return string(eq.block, ".", eq.tag)
+    label = isempty(idx_text) ?
+        string(eq.block, ".", eq.tag) :
+        string(eq.block, ".", eq.tag, "[", idx_text, "]")
+    if show_condition_role && payload isa NamedTuple
+        role = get(payload, :condition_role, :enforce)
+        return string(label, " (", replace(string(role), "_" => " "), ")")
     end
-    return string(eq.block, ".", eq.tag, "[", idx_text, "]")
+    return label
 end
 
 function _format_indices(idxs)

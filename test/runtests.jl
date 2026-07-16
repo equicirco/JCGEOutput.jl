@@ -16,11 +16,18 @@ using Test
         register_equation!(ctx; tag=:eq3, block=:market, payload="q = sum(x)")
         register_equation!(ctx; tag=:eq4, block=:prod,
             payload=(indices=(), expr=EAdd([EVar(:x), EConst(1)]), constraint=nothing))
+        register_equation!(ctx; tag=:check, block=:market,
+            payload=(indices=(), info="accounting identity", constraint=nothing,
+                condition_role=:accounting_check))
 
         rendered = render_equations(ctx; format=:plain, level=:equation)
         @test occursin("prod.eq1", rendered)
         @test occursin("x = y", rendered)
         @test occursin("x + 1", rendered)
+
+        rendered_roles = render_equations(ctx; format=:plain, level=:equation,
+            show_condition_roles=true)
+        @test occursin("market.check (accounting check)", rendered_roles)
 
         block_rendered = render_block(ctx, :prod; format=:markdown)
         @test occursin("z = w", block_rendered)
@@ -84,12 +91,15 @@ using Test
         ctx = KernelContext()
         register_variable!(ctx, :x, 1.0)
         register_equation!(ctx; tag=:eq1, block=:prod,
-            payload=(indices=(), expr=EEq(EVar(:x), EConst(1)), constraint=nothing))
+            payload=(indices=(), expr=EEq(EVar(:x), EConst(1)), constraint=nothing,
+                condition_role=:accounting_check, residual=0.0))
         results = collect_results(ctx; metadata=Dict(:scenario_id => "base"))
         @test results.metadata[:scenario_id] == "base"
+        @test only(results.accounting_checks).residual == 0.0
 
         rows = tidy(results)
         @test rows isa Vector
+        @test any(row -> row.kind == :accounting_check, rows)
 
         json_path = joinpath(mktempdir(), "results.json")
         csv_path = joinpath(mktempdir(), "results.csv")
@@ -100,9 +110,11 @@ using Test
 
         roundtrip = results_from_json(json_path)
         @test roundtrip.primals == results.primals
+        @test only(roundtrip.accounting_checks).residual == 0.0
 
         dataset = JCGEOutput.to_dualsignals(results; dataset_id="test", component_type_by_block=Dict(:prod => :sector))
         @test dataset.dataset_id == "test"
+        @test any(solution -> solution.slack == 0.0, dataset.constraint_solutions)
 
         ds_json = joinpath(mktempdir(), "dualsignals.json")
         ds_dir = mktempdir()

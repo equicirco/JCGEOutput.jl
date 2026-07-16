@@ -2,7 +2,7 @@
 
 julia_version = "1.12.5"
 manifest_format = "2.0"
-project_hash = "49f3da3b34b623e5a11edb8e2cf576e63bccaad4"
+project_hash = "3f0545d8d61fec3242651d994fde0a7c708eb8fe"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -280,21 +280,21 @@ version = "0.1.0"
 
 [[deps.JCGECore]]
 deps = ["Test"]
-git-tree-sha1 = "f08dbf342506f3789a31934439f65dc3591e2741"
+git-tree-sha1 = "3056d2170f768f2c5c12ccc5aa48e941b76019fa"
 uuid = "9fb9d605-0ed3-4980-82c1-f0874844db5d"
-version = "0.1.1"
+version = "0.1.3"
 
 [[deps.JCGEOutput]]
 deps = ["Arrow", "CSV", "Dates", "DualSignals", "JCGECalibrate", "JCGECore", "JCGERuntime", "JSON3", "JuMP", "Parquet", "Tables", "Test"]
 path = "."
 uuid = "d375a7b0-530a-4732-94fc-3dc39a3a1ffd"
-version = "0.1.1"
+version = "0.1.3"
 
 [[deps.JCGERuntime]]
 deps = ["Distributed", "DualSignals", "JCGECore", "JuMP", "Test"]
-git-tree-sha1 = "4edc1f2eb0772cccee841ae347d612c43e6c7c5d"
+git-tree-sha1 = "f70600974e72602eaeb60286652807c82ac0f41e"
 uuid = "cc244198-1562-43f7-ad75-589e1d675269"
-version = "0.1.3"
+version = "0.1.4"
 
 [[deps.JLLWrappers]]
 deps = ["Artifacts", "Preferences"]
