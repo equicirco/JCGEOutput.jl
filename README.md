@@ -137,7 +137,31 @@ custom[:eqXv] = constraint_kind_enum(:balance)
 dataset = to_dualsignals(results; constraint_kind_by_tag=custom)
 ```
 
-## 3) SAM/IO-style reporting (dump solution back to a SAM)
+## 3) Satellite quantities and balance checks
+
+Satellite reporting connects solved model-volume drivers to quantities outside
+the monetary CGE core, including mass, energy, emissions, or product flows. It
+does not add equations or constraints to the equilibrium model.
+
+```julia
+using JCGEOutput
+
+anchors = [
+    SatelliteAnchor(:recycled_metal, "tonnes", 500.0, :Z_REC, 400.0),
+]
+baseline_reference = satellite_reference(baseline_results, anchors)
+projection = satellite_projection(scenario_results, anchors;
+    reference = baseline_reference)
+```
+
+The reference retains the solved zero-policy driver level. The baseline thus
+reproduces its observed physical quantities exactly, while scenarios report
+changes relative to the same baseline. Use `satellite_calibration_report` to
+inspect any difference between monetary calibration inputs and the solved
+reference; use `SatelliteBalance` and `satellite_balances` to evaluate signed
+post-solution quantity identities.
+
+## 4) SAM/IO-style reporting (dump solution back to a SAM)
 
 ```julia
 using JCGEOutput

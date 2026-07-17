@@ -7,5 +7,8 @@
 </picture>
 ```
 
-`JCGEOutput` is part of the [JCGE](https://jcge.org) ecosystem. This page provides the package
-overview and entry points; the API reference is on the next page.
+`JCGEOutput` is part of the [JCGE](https://jcge.org) ecosystem. It renders
+generated equations, collects and persists results, reconstructs model-backed
+SAM outputs, and reports physical or other satellite quantities relative to a
+solved baseline. The usage guide introduces the main workflows; the API
+reference documents the full interface.
