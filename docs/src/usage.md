@@ -35,3 +35,41 @@ their slack.
 ## Export
 
 Use `to_json`, `to_csv`, `to_arrow`, or `to_parquet` to persist results.
+
+## Satellite quantities and balance checks
+
+Satellite reporting links a solved model-volume variable to a quantity outside
+the monetary CGE core, such as mass, energy, emissions, or a physical product
+flow.  It does not add equations or constraints to the model.
+
+```julia
+anchors = [
+    SatelliteAnchor(:recycled_metal, "tonnes", 500.0, :Z_REC, 400.0),
+]
+baseline_reference = satellite_reference(baseline_results, anchors)
+projection = satellite_projection(scenario_results, anchors;
+    reference = baseline_reference)
+```
+
+The projected quantity is the calibrated physical quantity multiplied by the
+solved driver relative to its solved baseline level.  Thus the base solution
+reproduces the observed quantity exactly and every scenario uses the same
+denominator. `satellite_calibration_report` retains any difference between a
+rounded monetary calibration driver and the solved baseline driver. Units are
+declared with each anchor. When the necessary anchors are available, a signed
+balance can be checked after solution:
+
+```julia
+balances = [
+    SatelliteBalance(:metal_balance, "tonnes", [
+        :primary_metal => 1.0,
+        :recycled_metal => 1.0,
+        :metal_use => -1.0,
+    ]),
+]
+checks = satellite_balances(projection, balances)
+```
+
+All terms in a balance must have the declared unit.  Missing drivers or
+anchors raise an error by default; reporting mode can instead retain them as
+explicit missing values with `strict=false`.

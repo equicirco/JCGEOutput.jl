@@ -23,6 +23,8 @@ export results_from_json, results_from_csv, results_from_arrow, results_from_par
 export to_arrow, to_parquet
 export to_dualsignals, write_dualsignals_json, write_dualsignals_csv
 export sam_from_solution, write_sam_csv
+export SatelliteAnchor, SatelliteReference, SatelliteBalance
+export satellite_reference, satellite_calibration_report, satellite_projection, satellite_balances
 export DEFAULT_CONSTRAINT_KIND_TAG_MAP, constraint_kind_enum, component_type_enum
 export EquationExpr, EIndex, EVar, EParam, EConst, EAdd, EMul, EPow, EDiv, ENeg, ELog, ESum, EProd, EEq, ELe, EGe, ERaw
 export render_expr
@@ -51,6 +53,8 @@ Results(primals::Dict{Symbol,Float64}, reduced_costs::Dict{Symbol,Float64},
     duals::Vector{NamedTuple}, complements::Vector{NamedTuple},
     metadata::Dict{Symbol,Any}) =
     Results(primals, reduced_costs, duals, complements, NamedTuple[], metadata)
+
+include("satellites.jl")
 
 """
     collect_results(obj; metadata=Dict()) -> Results

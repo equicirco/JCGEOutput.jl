@@ -10,6 +10,20 @@ Removed: For features removed in this release.
 Fixed: For any bug fixes.
 Security: For vulnerabilities.
 
+## [0.1.4] - 2026-07-17
+### Added
+- Data-driven satellite reporting through `SatelliteAnchor`,
+  `SatelliteReference`, and `satellite_projection`, which converts solved
+  model-volume drivers into quantities with declared units without changing
+  the equilibrium system. References retain solved baseline drivers so that
+  physical anchors reproduce their base point exactly and scenarios use a
+  common denominator.
+- `satellite_calibration_report` to retain differences between monetary
+  calibration drivers and the solved satellite reference as explicit
+  diagnostics.
+- `SatelliteBalance` and `satellite_balances` for post-solution evaluation of
+  signed quantity identities, including unit and missing-anchor checks.
+
 ## [0.1.3] - 2026-07-16
 ### Added
 - Closure-condition roles in equation rendering, with optional role labels.

@@ -142,6 +142,63 @@ using Test
         @test get(from_parquet.primals, :x, 0.0) == 1.0
     end
 
+    @testset "satellite reporting" begin
+        results = Results(
+            Dict(:volume_a => 12.0, :volume_b => 7.2),
+            Dict{Symbol,Float64}(),
+            NamedTuple[],
+            NamedTuple[],
+            Dict{Symbol,Any}(),
+        )
+        anchors = [
+            SatelliteAnchor(:a, "tonnes", 6.0, :volume_a, 10.0),
+            SatelliteAnchor(:b, "tonnes", 5.0, :volume_b, 5.0),
+        ]
+        projection = satellite_projection(results, anchors)
+        @test projection[1].volume_index == 1.2
+        @test isapprox(projection[1].projected_quantity, 7.2)
+        @test isapprox(projection[2].projected_quantity, 7.2)
+        @test all(row -> row.status == :projected, projection)
+
+        reference = satellite_reference(results, anchors)
+        @test reference.id == :baseline
+        baseline_projection = satellite_projection(results, anchors; reference)
+        @test all(row -> row.volume_index == 1.0, baseline_projection)
+        @test all(row -> row.projected_quantity == row.base_quantity, baseline_projection)
+        @test all(row -> row.reference_id == :baseline, baseline_projection)
+        calibration_report = satellite_calibration_report(reference, anchors)
+        @test calibration_report[1].calibration_driver == 10.0
+        @test calibration_report[1].reference_driver == 12.0
+        @test calibration_report[1].relative_difference == 0.2
+
+        scenario_results = Results(
+            Dict(:volume_a => 18.0, :volume_b => 3.6),
+            Dict{Symbol,Float64}(),
+            NamedTuple[],
+            NamedTuple[],
+            Dict{Symbol,Any}(),
+        )
+        scenario_projection = satellite_projection(scenario_results, anchors; reference)
+        @test scenario_projection[1].volume_index == 1.5
+        @test scenario_projection[1].projected_quantity == 9.0
+        @test scenario_projection[2].volume_index == 0.5
+        @test scenario_projection[2].projected_quantity == 2.5
+
+        balances = [SatelliteBalance(:mass_check, "tonnes", [:a => 1.0, :b => -1.0])]
+        checked = satellite_balances(projection, balances)
+        @test only(checked).passes
+        @test only(checked).residual == 0.0
+
+        incomplete = satellite_projection(results, [SatelliteAnchor(:missing, "kg", 1.0, :missing_driver, 1.0)]; strict=false)
+        @test only(incomplete).status == :missing_driver
+        partial_reference = SatelliteReference(:partial, Dict(:volume_a => 12.0))
+        missing_reference = satellite_projection(results, anchors; reference=partial_reference, strict=false)
+        @test missing_reference[2].status == :missing_reference_driver
+        @test_throws ErrorException satellite_projection(results, [SatelliteAnchor(:missing, "kg", 1.0, :missing_driver, 1.0)])
+        @test_throws ErrorException SatelliteAnchor(:bad, "", 1.0, :volume_a, 1.0)
+        @test_throws ErrorException SatelliteBalance(:bad, "kg", Pair{Symbol,Float64}[])
+    end
+
     @testset "SAM output" begin
         labels = [:BRD, :MLK, :CAP, :LAB, :IDT, :TRF, :HOH, :GOV, :INV, :EXT]
         sam = JCGECalibrate.LabeledMatrix(zeros(length(labels), length(labels)), labels, labels)
