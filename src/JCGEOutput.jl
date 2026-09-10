@@ -1789,13 +1789,7 @@ function _render_expr(expr::EquationExpr; format::Symbol)
         num = _render_expr(expr.numerator; format=format)
         den = _render_expr(expr.denominator; format=format)
         if format == :latex
-            if expr.numerator isa EAdd || expr.numerator isa ENeg
-                num = string("(", num, ")")
-            end
-            if expr.denominator isa EAdd || expr.denominator isa ENeg
-                den = string("(", den, ")")
-            end
-            return string(num, " / ", den)
+            return string("\\frac{", num, "}{", den, "}")
         end
         return string(num, " / ", den)
     elseif expr isa ENeg
@@ -1862,7 +1856,7 @@ end
 
 function _latex_escape_exponent(text::AbstractString)
     escaped = replace(text, "\\" => "\\textbackslash{}")
-    escaped = replace(escaped, "#" => "\\#", "%" => "\\%", "&" => "\\&", "\$" => "\\\$", "^" => "\\^{}", "~" => "\\~{}")
+    escaped = replace(escaped, "_" => "\\_", "#" => "\\#", "%" => "\\%", "&" => "\\&", "\$" => "\\\$", "^" => "\\^{}", "~" => "\\~{}")
     return escaped
 end
 

@@ -39,6 +39,10 @@ using Test
         @test render_expr(EGe(ELog(EVar(:x)), EConst(0)); format=:plain) == "log(x) >= 0"
         @test render_expr(ELe(ELog(EAdd([EVar(:x), EConst(1)])), EConst(3)); format=:latex) ==
               "\\log\\left(x + 1\\right) \\le 3"
+        @test render_expr(EDiv(EVar(:price), EMul([EConst(1.02), EVar(:input_price)]));
+            format=:latex) == "\\frac{price}{1.02 \\cdot input\\_price}"
+        @test render_expr(EPow(EVar(:quantity), EParam(:material_share)); format=:latex) ==
+              "{quantity}^{material\\_share}"
 
         ctx = KernelContext()
         expr = ELe(ESum(:i, [:a, :b], EVar(:x, [EIndex(:i)])), EConst(10))
