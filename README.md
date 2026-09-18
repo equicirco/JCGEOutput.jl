@@ -62,8 +62,11 @@ Render the generated system (or each block) to:
 Recommended API surface:
 
 ```
-render_equations(model; format=:markdown, level=:block|:equation, show_defs=true)
-render_block(model, block_id; format=:markdown)
+render_equations(model; format=:markdown, level=:block|:equation,
+                 view=:expanded|:family, show_defs=true)
+render_block(model, block_id; format=:markdown, view=:expanded|:family)
+render_equation_report(model; format=:latex, view=:family|:indexed,
+                       report_mappings=EquationReportMapping[]) # objectives and equations
 render_symbols(model; format=:markdown, show_values=true) # set false to omit numeric values
 render_blocks(spec; format=:markdown)
 render_sections(sections; format=:markdown)
@@ -73,6 +76,21 @@ Include symbol tables: variables, parameters, indices/sets, domain restrictions.
 
 Key design point: render from a stable internal equation AST (not solver-specific
 objects), so it works regardless of backend.
+
+`render_equation_report(...; view=:family)` groups only equations whose
+registered AST is exactly identical, retaining the number of instances. It does
+not infer or hard-code generalized formulas. `view=:expanded` retains every
+registered equation instance. LaTeX reports use `align*` and therefore require
+the receiving document to load `amsmath`. Solver annotations (start values and
+bounds) are excluded from equation reports by default; pass
+`include_solver_annotations=true` only for a full registry audit.
+For an indexed report, `EquationReportMapping` lets the consumer explicitly map
+concrete registered index tuples to named report indices; mapping coverage is
+validated and never inferred from identifier names. Its optional `domain_values`
+mapping also normalizes concrete `ESum` and `EProd` domains in compact reports;
+`index_projections` maps source expression indices to declared report
+dimensions; `reference_indices` covers concrete references inside explicit
+additive terms.
 
 ## 2) Results container + persistence
 

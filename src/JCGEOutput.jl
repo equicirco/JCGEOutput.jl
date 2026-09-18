@@ -17,6 +17,8 @@ using Tables
 using DualSignals
 
 export render_equations, render_block
+export EquationFamily, equation_families, EquationTemplate, EquationReportMapping, equation_templates
+export render_equation_report
 export render_symbols, render_blocks, render_sections
 export Results, collect_results, tidy, to_json, to_csv
 export results_from_json, results_from_csv, results_from_arrow, results_from_parquet
@@ -739,8 +741,8 @@ function write_dualsignals_csv(obj::NamedTuple, dir::AbstractString; prefix::Abs
 end
 
 """
-    render_equations(obj; format=:markdown, level=:block, show_defs=true,
-        show_condition_roles=false)
+    render_equations(obj; format=:markdown, level=:block, view=:expanded,
+        show_defs=true, show_condition_roles=false)
 
 Render equations registered in a `KernelContext` or run result.
 
@@ -749,6 +751,8 @@ Inputs
   or a `JCGECore.RunSpec` (via a `KernelContext`).
 - `format`: `:markdown`, `:latex`, or `:plain`.
 - `level`: `:block` to group equations by block, or `:equation` for a flat list.
+- `view`: `:expanded` for every registered instance or `:family` for exact
+  equation families.
 - `show_defs`: include equation labels and block tags.
 - `show_condition_roles`: append each equation's closure role to its label.
 
@@ -756,30 +760,285 @@ Returns a formatted string. The output is derived from the equation AST, not
 solver-specific objects, so it is backend-agnostic.
 """
 function render_equations(obj; format::Symbol=:markdown, level::Symbol=:block,
-    show_defs::Bool=true, show_condition_roles::Bool=false)
+    view::Symbol=:expanded, show_defs::Bool=true, show_condition_roles::Bool=false)
     ctx = _context(obj)
     eqs = JCGERuntime.list_equations(ctx)
+    if view == :family
+        return _render_equation_families(_equation_families(eqs); format=format,
+            level=level, show_defs=show_defs,
+            show_condition_roles=show_condition_roles)
+    elseif view != :expanded
+        error("Unsupported view: $(view). Use :expanded or :family")
+    end
     return _render_equations(eqs; format=format, level=level, show_defs=show_defs,
         show_condition_roles=show_condition_roles)
 end
 
 """
-    render_block(obj, block_id; format=:markdown, show_defs=true,
-        show_condition_roles=false)
+    render_block(obj, block_id; format=:markdown, view=:expanded,
+        show_defs=true, show_condition_roles=false)
 
 Render equations for one block.
 
 `block_id` can be a `Symbol` or a string-like identifier; it is converted to a
 `Symbol` and matched against `EquationInfo.block` entries.
+
+`view=:family` groups only structurally identical registered equations; the
+default `:expanded` view retains every instance.
 """
-function render_block(obj, block_id; format::Symbol=:markdown, show_defs::Bool=true,
-    show_condition_roles::Bool=false)
+function render_block(obj, block_id; format::Symbol=:markdown, view::Symbol=:expanded,
+    show_defs::Bool=true, show_condition_roles::Bool=false)
     ctx = _context(obj)
     eqs = JCGERuntime.list_equations(ctx)
     block_sym = Symbol(block_id)
     eqs_block = filter(eq -> eq.block == block_sym, eqs)
+    if view == :family
+        return _render_equation_families(_equation_families(eqs_block); format=format,
+            level=:equation, show_defs=show_defs,
+            show_condition_roles=show_condition_roles)
+    elseif view != :expanded
+        error("Unsupported view: $(view). Use :expanded or :family")
+    end
     return _render_equations(eqs_block; format=format, level=:equation,
         show_defs=show_defs, show_condition_roles=show_condition_roles)
+end
+
+"""
+    EquationFamily
+
+One exact structural family of registered equations. A family groups registered
+equation instances only when their block, tag, equation kind, objective sense,
+and equation AST are identical. It therefore never substitutes a hand-written
+template for a model-derived equation.
+"""
+struct EquationFamily
+    block::Symbol
+    tag::Symbol
+    kind::Symbol
+    expression::Union{Nothing,EquationExpr}
+    objective_sense
+    condition_role
+    instances::Vector{NamedTuple}
+    domains::Vector{Pair{String,Vector{String}}}
+end
+
+"""
+    EquationTemplate
+
+One compact, indexed rendering of registered equation instances. A template is
+formed only when the registry metadata identifies how every varying reference
+depends on the declared equation indices. Calibrated numeric literals are
+rendered as either their recorded parameter symbols or generated calibration
+coefficient symbols. References that cannot be verified remain concrete,
+causing separate templates rather than an inferred formula.
+"""
+struct EquationTemplate
+    block::Symbol
+    tag::Symbol
+    kind::Symbol
+    expression::Union{Nothing,EquationExpr}
+    objective_sense
+    condition_role
+    instances::Vector{NamedTuple}
+    domains::Vector{Pair{String,Vector{String}}}
+    index_names::Tuple{Vararg{Symbol}}
+end
+
+"""
+    EquationReportMapping(; source_block, source_tag,
+        report_block=source_block, report_tag=source_tag,
+        index_names, coordinates, domain_values=Dict(), index_projections=Dict(),
+        reference_indices=Dict())
+
+Explicitly declare how concrete registered equation instances are represented
+by report indices. `coordinates` maps each exact registered `payload.indices`
+tuple to one tuple in the declared `index_names` order. This mapping is supplied
+by the model or report consumer: JCGEOutput does not infer indices from encoded
+symbol names.
+
+The mapping is validated when it is used. By default every registered instance
+selected by `(source_block, source_tag)` must have one coordinate, and every
+declared coordinate must select an existing instance. `report_block` and
+`report_tag` optionally provide a canonical report grouping without changing the
+registered model equations.
+
+`domain_values` explicitly maps concrete values in `ESum` and `EProd` domains
+to their report labels. It is required when those domains otherwise retain
+region-encoded identifiers after a multi-region formula is grouped.
+
+`index_projections` maps source `EIndex` names in the registered expression
+tree to one or more declared report indices. It is useful when a source index
+such as `:activity` or `:quantity` represents several report dimensions.
+
+`reference_indices` maps an exact variable or parameter reference to its report
+indices. Its keys are `(kind, name, source_indices)`, where `kind` is
+`:variable` or `:parameter`; values contain one tuple of report-index names per
+source index position. It handles explicit additive terms whose identifiers
+cannot be inferred from the equation's outer indices.
+"""
+struct EquationReportMapping
+    source_block::Symbol
+    source_tag::Symbol
+    report_block::Symbol
+    report_tag::Symbol
+    index_names::Tuple{Vararg{Symbol}}
+    coordinates::Dict{Tuple,Tuple}
+    domain_values::Dict{Symbol,Symbol}
+    index_projections::Dict{Symbol,Tuple{Vararg{Symbol}}}
+    reference_indices::Dict{Tuple{Symbol,Symbol,Tuple},Tuple}
+end
+
+function EquationReportMapping(; source_block, source_tag, report_block=source_block,
+    report_tag=source_tag, index_names, coordinates, domain_values=Dict(),
+    index_projections=Dict(), reference_indices=Dict())
+    names = Tuple(Symbol.(collect(index_names)))
+    isempty(names) && throw(ArgumentError("report mapping `index_names` cannot be empty"))
+    length(unique(names)) == length(names) ||
+        throw(ArgumentError("report mapping `index_names` must be unique"))
+    mapped_coordinates = Dict{Tuple,Tuple}()
+    for (source_indices, report_indices) in coordinates
+        source_key = _report_index_tuple(source_indices)
+        report_value = _report_index_tuple(report_indices)
+        length(report_value) == length(names) || throw(ArgumentError(
+            "report coordinate $(report_value) has $(length(report_value)) values, " *
+            "but $(length(names)) report indices were declared"))
+        haskey(mapped_coordinates, source_key) &&
+            throw(ArgumentError("duplicate report coordinate for source indices $(source_key)"))
+        mapped_coordinates[source_key] = report_value
+    end
+    isempty(mapped_coordinates) &&
+        throw(ArgumentError("report mapping `coordinates` cannot be empty"))
+    mapped_domains = Dict{Symbol,Symbol}()
+    for (source_value, report_value) in domain_values
+        source_key = Symbol(source_value)
+        haskey(mapped_domains, source_key) &&
+            throw(ArgumentError("duplicate report domain value $(source_key)"))
+        mapped_domains[source_key] = Symbol(report_value)
+    end
+    mapped_index_projections = Dict{Symbol,Tuple{Vararg{Symbol}}}()
+    for (source_index, report_positions) in index_projections
+        source_key = Symbol(source_index)
+        positions = Tuple(Symbol.(collect(report_positions)))
+        isempty(positions) && throw(ArgumentError(
+            "report index projection $(source_key) must declare at least one report index"))
+        all(position -> position in names, positions) || throw(ArgumentError(
+            "report index projection $(source_key) contains an index not declared by this mapping"))
+        haskey(mapped_index_projections, source_key) && throw(ArgumentError(
+            "duplicate report index projection for $(source_key)"))
+        mapped_index_projections[source_key] = positions
+    end
+    mapped_references = Dict{Tuple{Symbol,Symbol,Tuple},Tuple}()
+    for (source_reference, report_positions) in reference_indices
+        length(source_reference) == 3 || throw(ArgumentError(
+            "report reference keys must be `(kind, name, source_indices)` tuples"))
+        raw_kind, raw_name, raw_indices = source_reference
+        kind = Symbol(raw_kind)
+        kind in (:variable, :parameter) || throw(ArgumentError(
+            "report reference kind must be :variable or :parameter, not $(kind)"))
+        key = (kind, Symbol(raw_name), _report_index_tuple(raw_indices))
+        positions = Tuple(Tuple(Symbol.(collect(position))) for position in report_positions)
+        length(positions) == length(key[3]) || throw(ArgumentError(
+            "report reference $(key) has $(length(key[3])) source indices, but " *
+            "$(length(positions)) report index positions were declared"))
+        all(!isempty, positions) || throw(ArgumentError(
+            "each report reference position must declare at least one index name"))
+        haskey(mapped_references, key) && throw(ArgumentError(
+            "duplicate report reference mapping for $(key)"))
+        mapped_references[key] = positions
+    end
+    return EquationReportMapping(Symbol(source_block), Symbol(source_tag), Symbol(report_block),
+        Symbol(report_tag), names, mapped_coordinates, mapped_domains,
+        mapped_index_projections, mapped_references)
+end
+
+"""
+    equation_families(obj)
+
+Return exact structural families from the equation registry of `obj`. Each
+family retains the registered instances that it summarizes. When equations
+differ structurally across indices, they remain separate families rather than
+being silently generalized.
+"""
+function equation_families(obj)
+    ctx = _context(obj)
+    return _equation_families(JCGERuntime.list_equations(ctx))
+end
+
+"""
+    equation_templates(obj; include_solver_annotations=false,
+        report_mappings=EquationReportMapping[], strict_report_mappings=true)
+
+Return compact indexed templates inferred solely from registered equation ASTs,
+their declared `index_names`, their index tuples, and their parameter payloads.
+In this compact representation, calibrated numeric literals are replaced by
+symbols: a recorded parameter name when available, otherwise a deterministic
+calibration-coefficient symbol. The inference is conservative: it generalizes
+an instance only where the same mapping is verified across every candidate
+instance. It never relies on symbol naming conventions. `report_mappings` lets
+the consumer explicitly assign report indices to concrete registered instances;
+with `strict_report_mappings=true`, missing or unused assignments are errors.
+"""
+function equation_templates(obj; include_solver_annotations::Bool=false,
+    report_mappings::AbstractVector{<:EquationReportMapping}=EquationReportMapping[],
+    strict_report_mappings::Bool=true)
+    ctx = _context(obj)
+    eqs = JCGERuntime.list_equations(ctx)
+    if !include_solver_annotations
+        eqs = filter(!_is_solver_annotation, eqs)
+    end
+    eqs = _apply_report_mappings(eqs, report_mappings; strict=strict_report_mappings)
+    return _equation_templates(eqs)
+end
+
+"""
+    render_equation_report(obj; format=:latex, view=:family,
+        show_defs=true, show_condition_roles=false,
+        include_solver_annotations=false, report_mappings=EquationReportMapping[],
+        strict_report_mappings=true)
+
+Render a model-derived equation report. `view=:family` gives one display for
+each exact registered equation family and its number of instances;
+`view=:expanded` displays every registered equation instance; and
+`view=:indexed` derives compact indexed templates conservatively from the
+registered AST and metadata. The indexed view replaces calibrated numeric
+literals with symbols, so it is suitable for a mathematical specification;
+numerical values belong in calibration tables. Objectives are reported
+separately from equations. LaTeX output contains real mathematical environments
+(not comments) and requires `amsmath` for `align*`.
+
+By default, solver annotations (`start`, `lower`, `upper`, and `fixed`) are
+excluded because they configure numerical solution rather than define the
+model mathematically. Set `include_solver_annotations=true` for a complete
+registry audit.
+
+`report_mappings` is accepted only by `view=:indexed`. It lets the report
+consumer explicitly map concrete registered instances to report indices, with
+strict coverage validation enabled by default.
+"""
+function render_equation_report(obj; format::Symbol=:latex, view::Symbol=:family,
+    show_defs::Bool=true, show_condition_roles::Bool=false,
+    include_solver_annotations::Bool=false,
+    report_mappings::AbstractVector{<:EquationReportMapping}=EquationReportMapping[],
+    strict_report_mappings::Bool=true)
+    ctx = _context(obj)
+    eqs = JCGERuntime.list_equations(ctx)
+    if !include_solver_annotations
+        eqs = filter(!_is_solver_annotation, eqs)
+    end
+    !isempty(report_mappings) && view != :indexed && error(
+        "`report_mappings` can only be used with `view=:indexed`")
+    if view == :family
+        return _render_equation_report_families(_equation_families(eqs); format=format,
+            show_defs=show_defs, show_condition_roles=show_condition_roles)
+    elseif view == :indexed
+        eqs = _apply_report_mappings(eqs, report_mappings; strict=strict_report_mappings)
+        return _render_equation_report_families(_equation_templates(eqs); format=format,
+            show_defs=show_defs, show_condition_roles=show_condition_roles)
+    elseif view == :expanded
+        return _render_equation_report_expanded(eqs; format=format,
+            show_defs=show_defs, show_condition_roles=show_condition_roles)
+    end
+    error("Unsupported view: $(view). Use :expanded, :family, or :indexed")
 end
 
 """
@@ -1385,6 +1644,884 @@ function _render_equations(eqs; format::Symbol, level::Symbol, show_defs::Bool,
     return join(lines, "\n")
 end
 
+function _equation_expression(eq)
+    payload = eq.payload
+    payload isa NamedTuple || return nothing, :description, nothing
+    expr = get(payload, :expr, nothing)
+    if expr isa EquationExpr
+        return expr, :equation, nothing
+    end
+    objective_expr = get(payload, :objective_expr, nothing)
+    if objective_expr isa EquationExpr
+        return objective_expr, :objective, get(payload, :objective_sense, :Max)
+    end
+    return nothing, :description, nothing
+end
+
+const _SOLVER_ANNOTATION_TAGS = Set((:start, :lower, :upper, :fixed))
+
+_is_solver_annotation(eq) = eq.tag in _SOLVER_ANNOTATION_TAGS
+
+function _equation_condition_role(eq)
+    payload = eq.payload
+    return payload isa NamedTuple ? get(payload, :condition_role, :enforce) : nothing
+end
+
+function _equation_family_key(eq)
+    expression, kind, objective_sense = _equation_expression(eq)
+    expression_key = expression === nothing ? _equation_info(eq; format=:plain)[1] : repr(expression)
+    return (eq.block, eq.tag, kind, objective_sense, _equation_condition_role(eq), expression_key)
+end
+
+function _equation_families(eqs)
+    grouped = Dict{Tuple,Vector{NamedTuple}}()
+    keys_in_order = Tuple[]
+    for eq in eqs
+        key = _equation_family_key(eq)
+        if !haskey(grouped, key)
+            grouped[key] = NamedTuple[]
+            push!(keys_in_order, key)
+        end
+        push!(grouped[key], eq)
+    end
+    families = EquationFamily[]
+    for key in keys_in_order
+        instances = grouped[key]
+        representative = first(instances)
+        expression, kind, objective_sense = _equation_expression(representative)
+        domains = expression === nothing ? Pair{String,Vector{String}}[] : _collect_domains(expression)
+        push!(families, EquationFamily(representative.block, representative.tag, kind,
+            expression, objective_sense, _equation_condition_role(representative), instances,
+            domains))
+    end
+    return families
+end
+
+"""An inferred projection from one concrete index to declared equation indices."""
+struct _IndexProjection
+    names::Tuple{Vararg{Symbol}}
+end
+
+_report_index_tuple(value::Tuple) = value
+_report_index_tuple(value::AbstractVector) = Tuple(value)
+_report_index_tuple(value) = (value,)
+
+function _registered_report_indices(eq)
+    payload = eq.payload
+    payload isa NamedTuple || return ()
+    return _report_index_tuple(get(payload, :indices, ()))
+end
+
+function _report_mapping_lookup(mappings)
+    lookup = Dict{Tuple{Symbol,Symbol},EquationReportMapping}()
+    for mapping in mappings
+        selector = (mapping.source_block, mapping.source_tag)
+        haskey(lookup, selector) && throw(ArgumentError(
+            "multiple report mappings select $(mapping.source_block).$(mapping.source_tag)"))
+        lookup[selector] = mapping
+    end
+    return lookup
+end
+
+function _apply_report_mappings(eqs, mappings; strict::Bool)
+    isempty(mappings) && return eqs
+    lookup = _report_mapping_lookup(mappings)
+    selected = Dict(selector => 0 for selector in keys(lookup))
+    used = Dict(selector => Set{Tuple}() for selector in keys(lookup))
+    used_domains = Dict(selector => Set{Symbol}() for selector in keys(lookup))
+    used_index_projections = Dict(selector => Set{Symbol}() for selector in keys(lookup))
+    used_references = Dict(selector => Set{Tuple{Symbol,Symbol,Tuple}}() for selector in keys(lookup))
+    remapped = NamedTuple[]
+    for eq in eqs
+        selector = (eq.block, eq.tag)
+        mapping = get(lookup, selector, nothing)
+        if isnothing(mapping)
+            push!(remapped, eq)
+            continue
+        end
+        selected[selector] += 1
+        source_indices = _registered_report_indices(eq)
+        if !haskey(mapping.coordinates, source_indices)
+            strict && throw(ArgumentError(
+                "missing report coordinate for $(eq.block).$(eq.tag)$(source_indices)"))
+            push!(remapped, eq)
+            continue
+        end
+        push!(used[selector], source_indices)
+        payload = eq.payload
+        payload isa NamedTuple || throw(ArgumentError(
+            "cannot map $(eq.block).$(eq.tag): its payload has no registered indices"))
+        mapped_payload = _map_payload_report_values(payload, mapping.domain_values,
+            mapping.index_projections, mapping.reference_indices, used_domains[selector],
+            used_index_projections[selector], used_references[selector])
+        mapped_payload = merge(mapped_payload, (index_names=mapping.index_names,
+            indices=mapping.coordinates[source_indices]))
+        push!(remapped, merge(eq, (block=mapping.report_block, tag=mapping.report_tag,
+            payload=mapped_payload)))
+    end
+    for (selector, mapping) in lookup
+        selected[selector] > 0 || throw(ArgumentError(
+            "report mapping selects no registered equations: " *
+            "$(mapping.source_block).$(mapping.source_tag)"))
+        unused = setdiff(Set(keys(mapping.coordinates)), used[selector])
+        (!strict || isempty(unused)) || throw(ArgumentError(
+            "report mapping has coordinates with no registered equation: $(collect(unused))"))
+        unused_domains = setdiff(Set(keys(mapping.domain_values)), used_domains[selector])
+        (!strict || isempty(unused_domains)) || throw(ArgumentError(
+            "report mapping has domain values not used by its selected equations: " *
+            "$(collect(unused_domains))"))
+        unused_index_projections = setdiff(Set(keys(mapping.index_projections)),
+            used_index_projections[selector])
+        (!strict || isempty(unused_index_projections)) || throw(ArgumentError(
+            "report mapping has index projections not used by its selected equations: " *
+            "$(collect(unused_index_projections))"))
+        unused_references = setdiff(Set(keys(mapping.reference_indices)),
+            used_references[selector])
+        (!strict || isempty(unused_references)) || throw(ArgumentError(
+            "report mapping has reference indices not used by its selected equations: " *
+            "$(collect(unused_references))"))
+    end
+    return remapped
+end
+
+function _map_payload_report_values(payload::NamedTuple, domain_values::Dict{Symbol,Symbol},
+    index_projections::Dict{Symbol,Tuple{Vararg{Symbol}}},
+    reference_indices::Dict{Tuple{Symbol,Symbol,Tuple},Tuple}, used_domains::Set{Symbol},
+    used_index_projections::Set{Symbol}, used_references::Set{Tuple{Symbol,Symbol,Tuple}})
+    isempty(domain_values) && isempty(index_projections) && isempty(reference_indices) && return payload
+    replacements = Pair{Symbol,Any}[]
+    for name in (:expr, :objective_expr)
+        expression = get(payload, name, nothing)
+        expression isa EquationExpr || continue
+        push!(replacements, name => _map_expression_report_values(expression, domain_values,
+            index_projections, reference_indices, used_domains, used_index_projections,
+            used_references))
+    end
+    isempty(replacements) && return payload
+    return merge(payload, NamedTuple(replacements))
+end
+
+function _map_expression_report_values(expr::EquationExpr, domain_values::Dict{Symbol,Symbol},
+    index_projections::Dict{Symbol,Tuple{Vararg{Symbol}}},
+    reference_indices::Dict{Tuple{Symbol,Symbol,Tuple},Tuple}, used_domains::Set{Symbol},
+    used_index_projections::Set{Symbol}, used_references::Set{Tuple{Symbol,Symbol,Tuple}})
+    if expr isa EIndex
+        positions = get(index_projections, expr.name, nothing)
+        isnothing(positions) && return expr
+        push!(used_index_projections, expr.name)
+        return _IndexProjection(positions)
+    elseif expr isa EVar || expr isa EParam
+        isnothing(expr.idxs) && return expr
+        kind = expr isa EVar ? :variable : :parameter
+        key = (kind, expr.name, Tuple(expr.idxs))
+        positions = get(reference_indices, key, nothing)
+        if isnothing(positions)
+            indices = Any[index isa EquationExpr ?
+                _map_expression_report_values(index, domain_values, index_projections,
+                    reference_indices, used_domains, used_index_projections, used_references) :
+                index for index in expr.idxs]
+            return expr isa EVar ? EVar(expr.name, indices) : EParam(expr.name, indices)
+        end
+        push!(used_references, key)
+        indices = Any[_IndexProjection(position) for position in positions]
+        return expr isa EVar ? EVar(expr.name, indices) : EParam(expr.name, indices)
+    elseif expr isa EAdd
+        return EAdd([_map_expression_report_values(term, domain_values, index_projections,
+            reference_indices, used_domains, used_index_projections, used_references)
+            for term in expr.terms])
+    elseif expr isa EMul
+        return EMul([_map_expression_report_values(factor, domain_values, index_projections,
+            reference_indices, used_domains, used_index_projections, used_references)
+            for factor in expr.factors])
+    elseif expr isa EPow
+        return EPow(_map_expression_report_values(expr.base, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references),
+            _map_expression_report_values(expr.exponent, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references))
+    elseif expr isa EDiv
+        return EDiv(_map_expression_report_values(expr.numerator, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references),
+            _map_expression_report_values(expr.denominator, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references))
+    elseif expr isa ENeg
+        return ENeg(_map_expression_report_values(expr.expr, domain_values, index_projections,
+            reference_indices, used_domains, used_index_projections, used_references))
+    elseif expr isa ELog
+        return ELog(_map_expression_report_values(expr.expr, domain_values, index_projections,
+            reference_indices, used_domains, used_index_projections, used_references))
+    elseif expr isa ESum || expr isa EProd
+        domain = Symbol[]
+        for value in expr.domain
+            mapped_value = get(domain_values, value, value)
+            haskey(domain_values, value) && push!(used_domains, value)
+            push!(domain, mapped_value)
+        end
+        inner = _map_expression_report_values(expr.expr, domain_values, index_projections,
+            reference_indices, used_domains, used_index_projections, used_references)
+        return expr isa ESum ? ESum(expr.index, domain, inner) : EProd(expr.index, domain, inner)
+    elseif expr isa EEq
+        return EEq(_map_expression_report_values(expr.lhs, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references),
+            _map_expression_report_values(expr.rhs, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references))
+    elseif expr isa ELe
+        return ELe(_map_expression_report_values(expr.lhs, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references),
+            _map_expression_report_values(expr.rhs, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references))
+    elseif expr isa EGe
+        return EGe(_map_expression_report_values(expr.lhs, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references),
+            _map_expression_report_values(expr.rhs, domain_values, index_projections,
+                reference_indices, used_domains, used_index_projections, used_references))
+    end
+    return expr
+end
+
+function _template_index_data(eq)
+    payload = eq.payload
+    payload isa NamedTuple || return (), ()
+    raw_names = get(payload, :index_names, nothing)
+    raw_indices = get(payload, :indices, ())
+    raw_names === nothing && return (), ()
+    names = Tuple(Symbol.(collect(raw_names)))
+    indices = Tuple(raw_indices)
+    length(names) == length(indices) || return (), ()
+    return names, indices
+end
+
+function _expression_skeleton(expr::EquationExpr)
+    if expr isa EVar
+        return (:var, expr.name, isnothing(expr.idxs) ? 0 : length(expr.idxs))
+    elseif expr isa EParam
+        return (:param, expr.name, isnothing(expr.idxs) ? 0 : length(expr.idxs))
+    elseif expr isa EConst
+        return :constant
+    elseif expr isa ERaw
+        return (:raw, expr.text)
+    elseif expr isa EIndex
+        return (:index, expr.name)
+    elseif expr isa EAdd
+        return (:add, map(_expression_skeleton, expr.terms))
+    elseif expr isa EMul
+        return (:mul, map(_expression_skeleton, expr.factors))
+    elseif expr isa EPow
+        return (:pow, _expression_skeleton(expr.base), _expression_skeleton(expr.exponent))
+    elseif expr isa EDiv
+        return (:div, _expression_skeleton(expr.numerator), _expression_skeleton(expr.denominator))
+    elseif expr isa ENeg
+        return (:neg, _expression_skeleton(expr.expr))
+    elseif expr isa ELog
+        return (:log, _expression_skeleton(expr.expr))
+    elseif expr isa ESum
+        return (:sum, expr.index, _expression_skeleton(expr.expr))
+    elseif expr isa EProd
+        return (:prod, expr.index, _expression_skeleton(expr.expr))
+    elseif expr isa EEq
+        return (:eq, _expression_skeleton(expr.lhs), _expression_skeleton(expr.rhs))
+    elseif expr isa ELe
+        return (:le, _expression_skeleton(expr.lhs), _expression_skeleton(expr.rhs))
+    elseif expr isa EGe
+        return (:ge, _expression_skeleton(expr.lhs), _expression_skeleton(expr.rhs))
+    end
+    return repr(expr)
+end
+
+function _template_seed_key(eq)
+    expression, kind, objective_sense = _equation_expression(eq)
+    expression === nothing && return _equation_family_key(eq)
+    names, _ = _template_index_data(eq)
+    return (eq.block, eq.tag, kind, objective_sense, _equation_condition_role(eq),
+        names, _expression_skeleton(expression))
+end
+
+_template_path_key(path::Vector{Any}) = join(string.(path), "\u001f")
+
+function _collect_reference_values!(out::Dict{String,Vector{Any}}, expr::EquationExpr,
+    path::Vector{Any}=Any[])
+    if expr isa EVar || expr isa EParam
+        if !isnothing(expr.idxs)
+            for (position, value) in enumerate(expr.idxs)
+                push!(path, :index, position)
+                push!(get!(out, _template_path_key(path), Any[]), value)
+                pop!(path); pop!(path)
+            end
+        end
+    elseif expr isa EAdd || expr isa EMul
+        for (position, term) in enumerate(expr isa EAdd ? expr.terms : expr.factors)
+            push!(path, :term, position)
+            _collect_reference_values!(out, term, path)
+            pop!(path); pop!(path)
+        end
+    elseif expr isa EPow
+        push!(path, :base); _collect_reference_values!(out, expr.base, path); pop!(path)
+        push!(path, :exponent); _collect_reference_values!(out, expr.exponent, path); pop!(path)
+    elseif expr isa EDiv
+        push!(path, :numerator); _collect_reference_values!(out, expr.numerator, path); pop!(path)
+        push!(path, :denominator); _collect_reference_values!(out, expr.denominator, path); pop!(path)
+    elseif expr isa ENeg || expr isa ELog || expr isa ESum || expr isa EProd
+        push!(path, :expression); _collect_reference_values!(out, expr.expr, path); pop!(path)
+    elseif expr isa EEq || expr isa ELe || expr isa EGe
+        push!(path, :lhs); _collect_reference_values!(out, expr.lhs, path); pop!(path)
+        push!(path, :rhs); _collect_reference_values!(out, expr.rhs, path); pop!(path)
+    end
+    return out
+end
+
+function _collect_constant_values!(out::Dict{String,Vector{Float64}}, expr::EquationExpr,
+    path::Vector{Any}=Any[])
+    if expr isa EConst
+        push!(get!(out, _template_path_key(path), Float64[]), Float64(expr.value))
+    elseif expr isa EAdd || expr isa EMul
+        for (position, term) in enumerate(expr isa EAdd ? expr.terms : expr.factors)
+            push!(path, :term, position)
+            _collect_constant_values!(out, term, path)
+            pop!(path); pop!(path)
+        end
+    elseif expr isa EPow
+        push!(path, :base); _collect_constant_values!(out, expr.base, path); pop!(path)
+        push!(path, :exponent); _collect_constant_values!(out, expr.exponent, path); pop!(path)
+    elseif expr isa EDiv
+        push!(path, :numerator); _collect_constant_values!(out, expr.numerator, path); pop!(path)
+        push!(path, :denominator); _collect_constant_values!(out, expr.denominator, path); pop!(path)
+    elseif expr isa ENeg || expr isa ELog || expr isa ESum || expr isa EProd
+        push!(path, :expression); _collect_constant_values!(out, expr.expr, path); pop!(path)
+    elseif expr isa EEq || expr isa ELe || expr isa EGe
+        push!(path, :lhs); _collect_constant_values!(out, expr.lhs, path); pop!(path)
+        push!(path, :rhs); _collect_constant_values!(out, expr.rhs, path); pop!(path)
+    end
+    return out
+end
+
+function _is_function_of(values::Vector{Any}, outer_values::Vector{Tuple}, positions::Vector{Int})
+    lookup = Dict{Tuple,Any}()
+    for (value, indices) in zip(values, outer_values)
+        key = Tuple(indices[position] for position in positions)
+        if haskey(lookup, key) && lookup[key] != value
+            return false
+        end
+        lookup[key] = value
+    end
+    return true
+end
+
+function _index_projection(values::Vector{Any}, index_names::Tuple{Vararg{Symbol}},
+    outer_values::Vector{Tuple})
+    isempty(values) && return nothing
+    all(value -> value == first(values), values) && return nothing
+    isempty(index_names) && return nothing
+    candidates = Tuple{Vararg{Symbol}}[]
+    count = length(index_names)
+    for width in 1:count
+        for mask in 1:(1 << count) - 1
+            positions = [position for position in 1:count if (mask & (1 << (position - 1))) != 0]
+            length(positions) == width || continue
+            _is_function_of(values, outer_values, positions) || continue
+            push!(candidates, Tuple(index_names[position] for position in positions))
+        end
+        !isempty(candidates) && break
+    end
+    length(candidates) == 1 || return nothing
+    return _IndexProjection(only(candidates))
+end
+
+function _reference_index_maps(expressions::Vector{<:EquationExpr},
+    index_names::Tuple{Vararg{Symbol}}, outer_values::Vector{Tuple})
+    values = Dict{String,Vector{Any}}()
+    for expression in expressions
+        _collect_reference_values!(values, expression)
+    end
+    mappings = Dict{String,_IndexProjection}()
+    for (path, observed) in values
+        projection = _index_projection(observed, index_names, outer_values)
+        !isnothing(projection) && (mappings[path] = projection)
+    end
+    return mappings
+end
+
+function _parameter_entries(eq)
+    payload = eq.payload
+    payload isa NamedTuple || return NamedTuple[]
+    params = get(payload, :params, nothing)
+    params isa NamedTuple || return NamedTuple[]
+    entries = NamedTuple[]
+    for name in propertynames(params)
+        parameter = getproperty(params, name)
+        if parameter isa Real
+            push!(entries, (name=Symbol(name), key=(), value=Float64(parameter)))
+        elseif parameter isa AbstractDict
+            for (key, value) in parameter
+                value isa Real || continue
+                key_tuple = key isa Tuple ? Tuple(key) : (key,)
+                push!(entries, (name=Symbol(name), key=key_tuple, value=Float64(value)))
+            end
+        end
+    end
+    return entries
+end
+
+_same_number(left::Real, right::Real) = left == right || isapprox(left, right; rtol=1.0e-12, atol=0.0)
+
+function _parameter_specification(values::Vector{Float64}, instances::Vector{NamedTuple},
+    index_names::Tuple{Vararg{Symbol}}, outer_values::Vector{Tuple})
+    isempty(values) && return nothing
+    candidate_names = Set(entry.name for entry in _parameter_entries(first(instances)))
+    for instance in instances[2:end]
+        intersect!(candidate_names, Set(entry.name for entry in _parameter_entries(instance)))
+    end
+    specifications = NamedTuple[]
+    for name in sort!(collect(candidate_names); by=string)
+        matches_per_instance = Vector{NamedTuple}()
+        valid = true
+        for (instance, value) in zip(instances, values)
+            matches = [entry for entry in _parameter_entries(instance) if entry.name == name &&
+                _same_number(entry.value, value)]
+            if length(matches) != 1
+                valid = false
+                break
+            end
+            push!(matches_per_instance, only(matches))
+        end
+        valid || continue
+        key_lengths = unique(length(entry.key) for entry in matches_per_instance)
+        length(key_lengths) == 1 || continue
+        indices = Any[]
+        for position in 1:only(key_lengths)
+            observed = Any[entry.key[position] for entry in matches_per_instance]
+            projection = _index_projection(observed, index_names, outer_values)
+            if isnothing(projection)
+                all(value -> value == first(observed), observed) || (valid = false; break)
+                push!(indices, first(observed))
+            else
+                push!(indices, projection)
+            end
+        end
+        valid && push!(specifications, (name=name, indices=indices))
+    end
+    length(specifications) == 1 || return nothing
+    return only(specifications)
+end
+
+function _generated_coefficient_specification(values::Vector{Float64},
+    index_names::Tuple{Vararg{Symbol}}, outer_values::Vector{Tuple}, ordinal::Int)
+    projection = _index_projection(Any[values...], index_names, outer_values)
+    indices = isnothing(projection) ? Any[] : Any[projection]
+    return (name=Symbol("calibration_coefficient_", ordinal), indices=indices)
+end
+
+function _constant_parameter_maps(expressions::Vector{<:EquationExpr},
+    instances::Vector{NamedTuple}, index_names::Tuple{Vararg{Symbol}},
+    outer_values::Vector{Tuple})
+    values = Dict{String,Vector{Float64}}()
+    for expression in expressions
+        _collect_constant_values!(values, expression)
+    end
+    mappings = Dict{String,NamedTuple}()
+    ordinal = 0
+    for path in sort!(collect(keys(values)))
+        observed = values[path]
+        all(value -> value in (-1.0, 0.0, 1.0), observed) && continue
+        ordinal += 1
+        specification = _parameter_specification(observed, instances, index_names, outer_values)
+        mappings[path] = isnothing(specification) ?
+            _generated_coefficient_specification(observed, index_names, outer_values, ordinal) :
+            specification
+    end
+    return mappings
+end
+
+function _template_expression(expr::EquationExpr, reference_maps, constant_maps,
+    path::Vector{Any}=Any[])
+    if expr isa EVar || expr isa EParam
+        indices = nothing
+        if !isnothing(expr.idxs)
+            indices = Any[]
+            for (position, value) in enumerate(expr.idxs)
+                push!(path, :index, position)
+                push!(indices, get(reference_maps, _template_path_key(path), value))
+                pop!(path); pop!(path)
+            end
+        end
+        return expr isa EVar ? EVar(expr.name, indices) : EParam(expr.name, indices)
+    elseif expr isa EConst
+        specification = get(constant_maps, _template_path_key(path), nothing)
+        return isnothing(specification) ? expr : EParam(specification.name, specification.indices)
+    elseif expr isa EAdd
+        terms = EquationExpr[]
+        for (position, term) in enumerate(expr.terms)
+            push!(path, :term, position)
+            push!(terms, _template_expression(term, reference_maps, constant_maps, path))
+            pop!(path); pop!(path)
+        end
+        return EAdd(terms)
+    elseif expr isa EMul
+        factors = EquationExpr[]
+        for (position, term) in enumerate(expr.factors)
+            push!(path, :term, position)
+            push!(factors, _template_expression(term, reference_maps, constant_maps, path))
+            pop!(path); pop!(path)
+        end
+        return EMul(factors)
+    elseif expr isa EPow
+        push!(path, :base)
+        base = _template_expression(expr.base, reference_maps, constant_maps, path)
+        pop!(path)
+        push!(path, :exponent)
+        exponent = _template_expression(expr.exponent, reference_maps, constant_maps, path)
+        pop!(path)
+        return EPow(base, exponent)
+    elseif expr isa EDiv
+        push!(path, :numerator)
+        numerator = _template_expression(expr.numerator, reference_maps, constant_maps, path)
+        pop!(path)
+        push!(path, :denominator)
+        denominator = _template_expression(expr.denominator, reference_maps, constant_maps, path)
+        pop!(path)
+        return EDiv(numerator, denominator)
+    elseif expr isa ENeg
+        push!(path, :expression)
+        nested = _template_expression(expr.expr, reference_maps, constant_maps, path)
+        pop!(path)
+        return ENeg(nested)
+    elseif expr isa ELog
+        push!(path, :expression)
+        nested = _template_expression(expr.expr, reference_maps, constant_maps, path)
+        pop!(path)
+        return ELog(nested)
+    elseif expr isa ESum
+        push!(path, :expression)
+        nested = _template_expression(expr.expr, reference_maps, constant_maps, path)
+        pop!(path)
+        return ESum(expr.index, expr.domain, nested)
+    elseif expr isa EProd
+        push!(path, :expression)
+        nested = _template_expression(expr.expr, reference_maps, constant_maps, path)
+        pop!(path)
+        return EProd(expr.index, expr.domain, nested)
+    elseif expr isa EEq
+        push!(path, :lhs)
+        lhs = _template_expression(expr.lhs, reference_maps, constant_maps, path)
+        pop!(path)
+        push!(path, :rhs)
+        rhs = _template_expression(expr.rhs, reference_maps, constant_maps, path)
+        pop!(path)
+        return EEq(lhs, rhs)
+    elseif expr isa ELe
+        push!(path, :lhs)
+        lhs = _template_expression(expr.lhs, reference_maps, constant_maps, path)
+        pop!(path)
+        push!(path, :rhs)
+        rhs = _template_expression(expr.rhs, reference_maps, constant_maps, path)
+        pop!(path)
+        return ELe(lhs, rhs)
+    elseif expr isa EGe
+        push!(path, :lhs)
+        lhs = _template_expression(expr.lhs, reference_maps, constant_maps, path)
+        pop!(path)
+        push!(path, :rhs)
+        rhs = _template_expression(expr.rhs, reference_maps, constant_maps, path)
+        pop!(path)
+        return EGe(lhs, rhs)
+    end
+    return expr
+end
+
+function _append_equation_templates!(templates::Vector{EquationTemplate},
+    instances::Vector{NamedTuple})
+    representative = first(instances)
+    expression, kind, objective_sense = _equation_expression(representative)
+    index_names, _ = _template_index_data(representative)
+    if isnothing(expression)
+        push!(templates, EquationTemplate(representative.block, representative.tag, kind,
+            nothing, objective_sense, _equation_condition_role(representative), instances,
+            Pair{String,Vector{String}}[], index_names))
+        return templates
+    end
+    expressions = EquationExpr[_equation_expression(instance)[1] for instance in instances]
+    outer_values = Tuple[_template_index_data(instance)[2] for instance in instances]
+    reference_maps = _reference_index_maps(expressions, index_names, outer_values)
+    constant_maps = _constant_parameter_maps(expressions, instances, index_names, outer_values)
+    grouped = Dict{String,Vector{NamedTuple}}()
+    rendered_expressions = Dict{String,EquationExpr}()
+    for (instance, instance_expression) in zip(instances, expressions)
+        template_expression = _template_expression(instance_expression, reference_maps, constant_maps)
+        key = repr(template_expression)
+        push!(get!(grouped, key, NamedTuple[]), instance)
+        rendered_expressions[key] = template_expression
+    end
+    for key in sort!(collect(keys(grouped)))
+        grouped_instances = grouped[key]
+        template_expression = rendered_expressions[key]
+        push!(templates, EquationTemplate(representative.block, representative.tag, kind,
+            template_expression, objective_sense, _equation_condition_role(representative),
+            grouped_instances, _collect_domains(template_expression), index_names))
+    end
+    return templates
+end
+
+function _equation_templates(eqs)
+    seed_groups = Dict{Tuple,Vector{NamedTuple}}()
+    seed_order = Tuple[]
+    for eq in eqs
+        key = _template_seed_key(eq)
+        if !haskey(seed_groups, key)
+            seed_groups[key] = NamedTuple[]
+            push!(seed_order, key)
+        end
+        push!(seed_groups[key], eq)
+    end
+    templates = EquationTemplate[]
+    for key in seed_order
+        _append_equation_templates!(templates, seed_groups[key])
+    end
+    return templates
+end
+
+function _render_equation_families(families; format::Symbol, level::Symbol,
+    show_defs::Bool, show_condition_roles::Bool)
+    if level != :block && level != :equation
+        error("Unsupported level: $(level). Use :block or :equation")
+    end
+    _validate_equation_format(format)
+    lines = String[]
+    if format == :markdown
+        push!(lines, "# Equation families")
+    elseif format == :latex
+        push!(lines, "% Equation families")
+    else
+        push!(lines, "EQUATION FAMILIES")
+    end
+    isempty(families) && return join([lines; _format_text(format, "No equations registered.")], "\n")
+    if level == :equation
+        for family in families
+            append!(lines, _render_equation_family(family; format=format, show_defs=show_defs,
+                show_condition_roles=show_condition_roles))
+        end
+    else
+        by_block = Dict{Symbol,Vector{EquationFamily}}()
+        for family in families
+            push!(get!(by_block, family.block, EquationFamily[]), family)
+        end
+        for (block, block_families) in sort(collect(by_block); by=first)
+            append!(lines, _render_family_block_section(block, block_families; format=format,
+                show_defs=show_defs, show_condition_roles=show_condition_roles))
+        end
+    end
+    return join(lines, "\n")
+end
+
+function _render_equation_report_families(families; format::Symbol, show_defs::Bool,
+    show_condition_roles::Bool)
+    _validate_equation_format(format)
+    objectives = filter(family -> family.kind == :objective, families)
+    equations = filter(family -> family.kind != :objective, families)
+    lines = _report_heading(format, "Model equation report", 1)
+    if isempty(families)
+        push!(lines, _format_text(format, "No equations registered."))
+        return join(lines, "\n")
+    end
+    if !isempty(objectives)
+        append!(lines, _report_heading(format, "Objective functions", 2))
+        append!(lines, _render_report_families(objectives; format=format, show_defs=show_defs,
+            show_condition_roles=show_condition_roles))
+    end
+    if !isempty(equations)
+        append!(lines, _report_heading(format, "Equations", 2))
+        append!(lines, _render_report_families(equations; format=format, show_defs=show_defs,
+            show_condition_roles=show_condition_roles))
+    end
+    return join(lines, "\n")
+end
+
+function _render_equation_report_expanded(eqs; format::Symbol, show_defs::Bool,
+    show_condition_roles::Bool)
+    _validate_equation_format(format)
+    objectives = filter(eq -> _equation_expression(eq)[2] == :objective, eqs)
+    equations = filter(eq -> _equation_expression(eq)[2] != :objective, eqs)
+    lines = _report_heading(format, "Model equation report", 1)
+    if isempty(eqs)
+        push!(lines, _format_text(format, "No equations registered."))
+        return join(lines, "\n")
+    end
+    if !isempty(objectives)
+        append!(lines, _report_heading(format, "Objective functions", 2))
+        append!(lines, _render_report_equations(objectives; format=format, show_defs=show_defs,
+            show_condition_roles=show_condition_roles))
+    end
+    if !isempty(equations)
+        append!(lines, _report_heading(format, "Equations", 2))
+        append!(lines, _render_report_equations(equations; format=format, show_defs=show_defs,
+            show_condition_roles=show_condition_roles))
+    end
+    return join(lines, "\n")
+end
+
+function _report_heading(format::Symbol, text::AbstractString, level::Int)
+    if format == :markdown
+        return [repeat("#", level) * " " * text]
+    elseif format == :latex
+        command = level == 1 ? "section" : level == 2 ? "subsection" : "subsubsection"
+        return ["\\$(command)*{$(_latex_escape(text))}"]
+    end
+    return [uppercase(text)]
+end
+
+function _render_report_families(families; format::Symbol, show_defs::Bool,
+    show_condition_roles::Bool)
+    lines = String[]
+    by_block = Dict{Symbol,Vector{Any}}()
+    for family in families
+        push!(get!(by_block, family.block, Any[]), family)
+    end
+    for (block, block_families) in sort(collect(by_block); by=first)
+        append!(lines, _render_family_block_section(block, block_families; format=format,
+            show_defs=show_defs, show_condition_roles=show_condition_roles, report=true))
+    end
+    return lines
+end
+
+function _render_report_equations(eqs; format::Symbol, show_defs::Bool,
+    show_condition_roles::Bool)
+    lines = String[]
+    by_block = Dict{Symbol,Vector{NamedTuple}}()
+    for eq in eqs
+        push!(get!(by_block, eq.block, NamedTuple[]), eq)
+    end
+    for (block, block_eqs) in sort(collect(by_block); by=first)
+        if format == :markdown
+            push!(lines, "### Block: $(block)")
+        elseif format == :latex
+            push!(lines, "\\subsubsection*{Block: $(_latex_escape(string(block)))}")
+        else
+            push!(lines, "BLOCK: $(block)")
+        end
+        for eq in block_eqs
+            append!(lines, _render_report_equation(eq; format=format, show_defs=show_defs,
+                show_condition_roles=show_condition_roles))
+        end
+    end
+    return lines
+end
+
+function _render_family_block_section(block, families; format::Symbol, show_defs::Bool,
+    show_condition_roles::Bool, report::Bool=false)
+    lines = String[]
+    if format == :markdown
+        push!(lines, report ? "### Block: $(block)" : "## Block: $(block)")
+    elseif format == :latex
+        command = report ? "subsubsection" : "paragraph"
+        push!(lines, "\\$(command)*{Block: $(_latex_escape(string(block)))}")
+    else
+        push!(lines, "BLOCK: $(block)")
+    end
+    for family in families
+        append!(lines, _render_equation_family(family; format=format, show_defs=show_defs,
+            show_condition_roles=show_condition_roles))
+    end
+    return lines
+end
+
+function _render_equation_family(family; format::Symbol, show_defs::Bool,
+    show_condition_roles::Bool, label_override::Union{Nothing,String}=nothing)
+    lines = String[]
+    label = show_defs ? something(label_override,
+        _family_label(family; show_condition_role=show_condition_roles)) : ""
+    instance_text = "$(length(family.instances)) registered " *
+        (length(family.instances) == 1 ? "instance" : "instances")
+    if family.expression === nothing
+        info, _ = _equation_info(first(family.instances); format=format)
+        if format == :latex
+            !isempty(label) && push!(lines, "\\paragraph{$(_latex_escape(label))}")
+            push!(lines, "\\noindent\\emph{Description only; no equation AST was registered.} " *
+                _latex_escape(info) * "\\par")
+        elseif format == :markdown
+            !isempty(label) && push!(lines, "**$(label)**")
+            push!(lines, "Description only; no equation AST was registered: $(info)")
+        else
+            push!(lines, isempty(label) ? "* $(info)" : "* $(label) $(info)")
+        end
+        return lines
+    end
+    rendered = family.kind == :objective ?
+        _render_objective_expr(family.expression, family.objective_sense; format=format) :
+        render_expr(family.expression; format=format)
+    if format == :latex
+        !isempty(label) && push!(lines, "\\paragraph{$(_latex_escape(label))}")
+        push!(lines, "\\begin{align*}")
+        push!(lines, _render_latex_alignment(family.expression, rendered; kind=family.kind))
+        push!(lines, "\\end{align*}")
+        push!(lines, "\\noindent\\emph{$(instance_text).}\\par")
+        append!(lines, _render_family_domains(family.domains; format=:latex))
+    elseif format == :markdown
+        !isempty(label) && push!(lines, "**$(label)**")
+        push!(lines, "\$\$\n$(rendered)\n\$\$")
+        push!(lines, "_$(instance_text)._")
+        append!(lines, _render_family_domains(family.domains; format=:markdown))
+    else
+        prefix = isempty(label) ? "*" : "* $(label)"
+        push!(lines, "$(prefix) $(rendered) ($(instance_text))")
+        append!(lines, _render_family_domains(family.domains; format=:plain))
+    end
+    return lines
+end
+
+function _render_report_equation(eq; format::Symbol, show_defs::Bool,
+    show_condition_roles::Bool)
+    expression, kind, sense = _equation_expression(eq)
+    expression === nothing && return [_render_equation_line(eq; format=format,
+        show_defs=show_defs, show_condition_roles=show_condition_roles)]
+    family = EquationFamily(eq.block, eq.tag, kind, expression, sense,
+        _equation_condition_role(eq), NamedTuple[eq], _collect_domains(expression))
+    return _render_equation_family(family; format=format, show_defs=show_defs,
+        show_condition_roles=show_condition_roles,
+        label_override=_equation_label(eq; show_condition_role=show_condition_roles))
+end
+
+function _family_label(family; show_condition_role::Bool=false)
+    label = string(family.block, ".", family.tag)
+    if show_condition_role && family.condition_role !== nothing
+        return string(label, " (", replace(string(family.condition_role), "_" => " "), ")")
+    end
+    return label
+end
+
+function _render_latex_alignment(expression::EquationExpr, rendered::AbstractString; kind::Symbol)
+    if kind == :equation
+        if expression isa EEq
+            return string(render_expr(expression.lhs; format=:latex), " &= ",
+                render_expr(expression.rhs; format=:latex))
+        elseif expression isa ELe
+            return string(render_expr(expression.lhs; format=:latex), " &\\le ",
+                render_expr(expression.rhs; format=:latex))
+        elseif expression isa EGe
+            return string(render_expr(expression.lhs; format=:latex), " &\\ge ",
+                render_expr(expression.rhs; format=:latex))
+        end
+    end
+    return string("&\\quad ", rendered)
+end
+
+function _render_family_domains(domains; format::Symbol)
+    isempty(domains) && return String[]
+    unique_domains = unique(domains)
+    if format == :latex
+        terms = ["$(_latex_escape(index)) \\in \\{$(join(_latex_escape.(domain), ", "))\\}"
+            for (index, domain) in unique_domains]
+        return ["\\noindent\\emph{Internal sum/product domains:} \\( $(join(terms, "; ")) \\)\\par"]
+    elseif format == :markdown
+        terms = ["$(index) in { $(join(domain, ", ")) }" for (index, domain) in unique_domains]
+        return ["Internal sum/product domains: " * join(terms, "; ")]
+    end
+    terms = ["$(index) in { $(join(domain, ", ")) }" for (index, domain) in unique_domains]
+    return ["  domains: " * join(terms, "; ")]
+end
+
+function _validate_equation_format(format::Symbol)
+    format in (:markdown, :latex, :plain) ||
+        error("Unsupported format: $(format). Use :markdown, :latex, or :plain")
+    return nothing
+end
+
 """
     _render_block_list(blocks; format)
 
@@ -1534,7 +2671,10 @@ function _render_equation_line(eq; format::Symbol, show_defs::Bool,
         end
         return isempty(label) ? "$(info)\n" : "`$(label)` $(info)\n"
     elseif format == :latex
-        if isempty(label)
+        if is_math
+            label_comment = isempty(label) ? "" : "% $(label)\n"
+            return string(label_comment, "\\[\n", info, "\n\\]")
+        elseif isempty(label)
             return "% $(info)"
         else
             return "% $(label) $(info)"
@@ -1767,7 +2907,7 @@ function _render_expr(expr::EquationExpr; format::Symbol)
         op = format == :latex ? " \\cdot " : " * "
         return join(parts, op)
     elseif expr isa EPow
-        base = _wrap_if_needed(expr.base, _render_expr(expr.base; format=format); format=format)
+        base = _wrap_power_base(expr.base, _render_expr(expr.base; format=format); format=format)
         exp = _render_expr(expr.exponent; format=format)
         if format == :latex
             if expr.base isa EVar || expr.base isa EParam
@@ -1784,6 +2924,7 @@ function _render_expr(expr::EquationExpr; format::Symbol)
             exp = _render_exponent_expr(expr.exponent)
             return string(base, "^{", exp, "}")
         end
+        exp = _wrap_power_exponent(expr.exponent, exp; format=format)
         return string(base, "^", exp)
     elseif expr isa EDiv
         num = _render_expr(expr.numerator; format=format)
@@ -1845,13 +2986,11 @@ end
 """
     _render_exponent_expr(expr)
 
-Render exponents using a plain representation to keep power formatting stable.
+Render an exponent as mathematics. This preserves generated calibration
+coefficient symbols rather than converting them to escaped plain text.
 """
 function _render_exponent_expr(expr::EquationExpr)
-    text = _render_expr(expr; format=:plain)
-    text = replace(text, "[" => "_", "]" => "")
-    text = replace(text, " " => "")
-    return _latex_escape_exponent(text)
+    return _render_expr(expr; format=:latex)
 end
 
 function _latex_escape_exponent(text::AbstractString)
@@ -1869,12 +3008,43 @@ function _wrap_if_needed(expr::EquationExpr, rendered::AbstractString; format::S
     return rendered
 end
 
+function _wrap_power_base(expr::EquationExpr, rendered::AbstractString; format::Symbol)
+    needs_grouping = expr isa EAdd || expr isa EMul || expr isa EDiv ||
+        expr isa ENeg || expr isa EPow || expr isa EEq || expr isa ELe || expr isa EGe
+    !needs_grouping && return rendered
+    if format == :latex
+        return string("\\left(", rendered, "\\right)")
+    end
+    return string("(", rendered, ")")
+end
+
+function _wrap_power_exponent(expr::EquationExpr, rendered::AbstractString; format::Symbol)
+    needs_grouping = expr isa EAdd || expr isa EMul || expr isa EDiv ||
+        expr isa ENeg || expr isa EPow || expr isa EEq || expr isa ELe || expr isa EGe
+    !needs_grouping && return rendered
+    return string("(", rendered, ")")
+end
+
 """
     _render_symbol(name, idxs; format)
 
 Render a symbol name with optional indices.
 """
 function _render_symbol(name::Symbol, idxs::Union{Nothing,Vector{Any}}; format::Symbol)
+    coefficient = match(r"^calibration_coefficient_(\d+)$", string(name))
+    if !isnothing(coefficient)
+        identifier = only(coefficient.captures)
+        if format == :latex
+            if idxs === nothing || isempty(idxs)
+                return string("\\kappa_{", identifier, "}")
+            end
+            idx_text = join(map(idx -> _render_index(idx; format=format), idxs), ",")
+            return string("\\kappa_{", identifier, ",", idx_text, "}")
+        end
+        suffix = idxs === nothing || isempty(idxs) ? "" :
+            "[" * join(map(idx -> _render_index(idx; format=format), idxs), ",") * "]"
+        return string("κ", identifier, suffix)
+    end
     if idxs === nothing || isempty(idxs)
         text = string(name)
         return format == :latex ? _latex_escape(text) : text
@@ -1897,6 +3067,15 @@ end
 Render a single index value (symbol/number/string) in the chosen format.
 """
 function _render_index(idx; format::Symbol)
+    if idx isa _IndexProjection
+        labels = _latex_escape.(string.(idx.names))
+        if length(labels) == 1
+            return only(labels)
+        elseif format == :latex
+            return "\\langle " * join(labels, ", ") * "\\rangle"
+        end
+        return "(" * join(labels, ", ") * ")"
+    end
     if idx isa EIndex
         text = string(idx.name)
         return format == :latex ? _latex_escape(text) : text

@@ -13,6 +13,66 @@ Equation payloads can use the `JCGECore` expression tree directly. `JCGEOutput`
 renders equality equations (`EEq`), inequality equations (`ELe`, `EGe`), and
 natural logarithms (`ELog`) to plain text, Markdown/MathJax, or LaTeX.
 
+## Equation reports
+
+For a manuscript-ready inventory, use the model-derived equation report:
+
+```julia
+latex = render_equation_report(result; format=:latex, view=:family)
+```
+
+`view=:family` groups only registered equations with an identical AST, block,
+tag, closure role, and objective sense. It reports the number of registered
+instances without replacing model equations with hand-written templates.
+`view=:expanded` lists every registered instance instead. Objective functions
+are separated from equality and inequality equations. LaTeX reports use
+`align*`, so the receiving document must load `amsmath`. Solver annotations
+(start values and bounds) are excluded by default because they configure the
+numerical solve rather than define the mathematical model. Set
+`include_solver_annotations=true` to audit the full registry.
+
+For indexed reports whose concrete registered identifiers encode several model
+dimensions, the consumer can declare those dimensions explicitly. This avoids
+parsing identifier names and validates that every selected equation is covered:
+
+```julia
+mapping = EquationReportMapping(
+    source_block=:eol_source,
+    source_tag=:choice,
+    index_names=(:region, :product, :route),
+    coordinates=Dict(
+        (:EOL_DE_ELMA_REC,) => (:DE, :ELMA, :REC),
+        # one entry for every selected registered equation
+    ),
+    domain_values=Dict(
+        :FAC_DE_LAB => :LAB,
+        :FAC_DE_CAP => :CAP,
+    ),
+    index_projections=Dict(
+        :activity => (:region, :product),
+    ),
+    reference_indices=Dict(
+        (:variable, :pz, (:IND_DE_NEW_ELMA,)) => ((:region, :product),),
+    ),
+)
+latex = render_equation_report(result; format=:latex, view=:indexed,
+    report_mappings=[mapping])
+```
+
+Each key is an exact registered `payload.indices` tuple. The mapping is a
+reporting declaration only: it does not alter the model equations.
+`domain_values` applies only to the concrete domains of generated sums and
+products, so a compact multi-region formula can show, for example, `{LAB, CAP}`
+instead of a representative region's factor identifiers. Strict validation also
+rejects declared domain values that are not used by the selected equations.
+`index_projections` maps a source `EIndex` used by an expression to one or more
+of the declared report indices; for example, an `:activity` index can be
+rendered as `(region, product)`. It is likewise explicitly declared and checked
+for use.
+`reference_indices` applies to a concrete variable or parameter reference inside
+an equation, including explicit additive terms; its value provides one report
+index tuple for each original index position.
+
 To disclose which equations are solver-enforced conditions and which are
 post-solution accounting checks, request the optional role labels:
 
