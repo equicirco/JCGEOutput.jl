@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 title: JCGEOutput.jl - Equation rendering and results handling for JCGE.
 message: >-
-  v0.1.5 - Corrects LaTeX equation rendering, preserving division structure and escaping exponent identifiers.
+  v0.1.6 - Adds explicit indexed equation-report mappings and improves LaTeX layout for long equations and domains.
 type: software
 doi: 10.5281/zenodo.18290750
 authors:
