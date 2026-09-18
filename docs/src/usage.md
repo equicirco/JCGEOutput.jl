@@ -73,6 +73,21 @@ for use.
 an equation, including explicit additive terms; its value provides one report
 index tuple for each original index position.
 
+When a model registers an identity as an explicit enumeration, the consumer can
+render it as a compact sum only by declaring that enumeration explicitly. For
+example, a regional market identity can use:
+
+```julia
+additive_sums = [
+    AdditiveSumMapping(path=(:lhs,), index=:region,
+        domain=[:DE, :FR], term_name=:EU_SALE, index_position=2),
+]
+```
+
+The selected expression must be a direct addition of the declared reference;
+the domain and the non-summation indices are checked for every registered
+instance. This changes only the report, not the model equation.
+
 To disclose which equations are solver-enforced conditions and which are
 post-solution accounting checks, request the optional role labels:
 

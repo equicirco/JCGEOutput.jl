@@ -90,7 +90,8 @@ validated and never inferred from identifier names. Its optional `domain_values`
 mapping also normalizes concrete `ESum` and `EProd` domains in compact reports;
 `index_projections` maps source expression indices to declared report
 dimensions; `reference_indices` covers concrete references inside explicit
-additive terms.
+additive terms. `additive_sums` can replace a consumer-declared enumeration of
+direct additive terms with a validated indexed sum in the report.
 
 ## 2) Results container + persistence
 

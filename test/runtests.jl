@@ -388,6 +388,48 @@ using Test
         )
         @test_throws ArgumentError equation_templates(explicit_reference;
             report_mappings=[unused_reference_mapping])
+
+        common_market = KernelContext()
+        for product in (:ELMA, :RATV)
+            register_equation!(common_market; tag=:clearing, block=:common_market,
+                payload=(indices=(product,), index_names=(:product,),
+                    expr=EEq(
+                        EAdd([EVar(:EU_SALE, Any[product, region]) for region in (:DE, :FR)]),
+                        EAdd([EVar(:EU_PURCHASE, Any[product, region]) for region in (:DE, :FR)])),
+                    constraint=nothing))
+        end
+        eu_sales_sum = AdditiveSumMapping(path=(:lhs,), index=:region,
+            domain=[:DE, :FR], term_name=:EU_SALE, index_position=2)
+        eu_purchases_sum = AdditiveSumMapping(path=(:rhs,), index=:region,
+            domain=[:DE, :FR], term_name=:EU_PURCHASE, index_position=2)
+        common_market_mapping = EquationReportMapping(
+            source_block=:common_market,
+            source_tag=:clearing,
+            index_names=(:product,),
+            coordinates=Dict((:ELMA,) => (:ELMA,), (:RATV,) => (:RATV,)),
+            additive_sums=[eu_sales_sum, eu_purchases_sum],
+        )
+        common_market_report = render_equation_report(common_market; format=:latex,
+            view=:indexed, report_mappings=[common_market_mapping])
+        @test occursin("\\sum_{region \\in \\mathcal{D}_{region}} {EU\\_SALE}_{product,region}",
+            common_market_report)
+        @test occursin("\\sum_{region \\in \\mathcal{D}_{region}} {EU\\_PURCHASE}_{product,region}",
+            common_market_report)
+        @test !occursin("EU\\_SALE}_{product,\\text{DE}", common_market_report)
+
+        invalid_common_market_mapping = EquationReportMapping(
+            source_block=:common_market,
+            source_tag=:clearing,
+            index_names=(:product,),
+            coordinates=common_market_mapping.coordinates,
+            additive_sums=[
+                AdditiveSumMapping(path=(:lhs,), index=:region,
+                    domain=[:DE, :IT], term_name=:EU_SALE, index_position=2),
+                eu_purchases_sum,
+            ],
+        )
+        @test_throws ArgumentError equation_templates(common_market;
+            report_mappings=[invalid_common_market_mapping])
     end
 
     @testset "render_symbols and render_blocks" begin

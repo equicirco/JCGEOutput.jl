@@ -17,7 +17,7 @@ using Tables
 using DualSignals
 
 export render_equations, render_block
-export EquationFamily, equation_families, EquationTemplate, EquationReportMapping, equation_templates
+export EquationFamily, equation_families, EquationTemplate, EquationReportMapping, AdditiveSumMapping, equation_templates
 export render_equation_report
 export render_symbols, render_blocks, render_sections
 export Results, collect_results, tidy, to_json, to_csv
@@ -845,36 +845,61 @@ struct EquationTemplate
 end
 
 """
+    AdditiveSumMapping(; path, index, domain, term_kind=:variable,
+        term_name, index_position)
+
+Explicitly render an enumerated additive expression as an indexed sum in an
+equation report. `path` identifies the target expression from the root equation
+(for example `(:lhs,)` or `(:rhs,)`). The target must be a direct `EAdd` of
+references named `term_name` with kind `term_kind`. Their `index_position`-th
+source index must cover `domain` exactly. All other source indices must be
+identical within an equation instance.
+
+The report consumer supplies this declaration. It is validated for every
+registered equation instance and never inferred from encoded identifiers.
+"""
+struct AdditiveSumMapping
+    path::Tuple{Vararg{Any}}
+    index::Symbol
+    domain::Vector{Symbol}
+    term_kind::Symbol
+    term_name::Symbol
+    index_position::Int
+end
+
+function AdditiveSumMapping(; path, index, domain, term_kind=:variable,
+    term_name, index_position)
+    normalized_path = Tuple(path)
+    isempty(normalized_path) && throw(ArgumentError(
+        "additive-sum mapping `path` cannot be empty"))
+    normalized_index = Symbol(index)
+    normalized_domain = Symbol.(collect(domain))
+    isempty(normalized_domain) && throw(ArgumentError(
+        "additive-sum mapping `domain` cannot be empty"))
+    length(unique(normalized_domain)) == length(normalized_domain) || throw(ArgumentError(
+        "additive-sum mapping `domain` values must be unique"))
+    normalized_kind = Symbol(term_kind)
+    normalized_kind in (:variable, :parameter) || throw(ArgumentError(
+        "additive-sum mapping `term_kind` must be :variable or :parameter"))
+    normalized_position = Int(index_position)
+    normalized_position > 0 || throw(ArgumentError(
+        "additive-sum mapping `index_position` must be positive"))
+    return AdditiveSumMapping(normalized_path, normalized_index, normalized_domain,
+        normalized_kind, Symbol(term_name), normalized_position)
+end
+
+"""
     EquationReportMapping(; source_block, source_tag,
         report_block=source_block, report_tag=source_tag,
         index_names, coordinates, domain_values=Dict(), index_projections=Dict(),
-        reference_indices=Dict())
+        reference_indices=Dict(), additive_sums=AdditiveSumMapping[])
 
-Explicitly declare how concrete registered equation instances are represented
-by report indices. `coordinates` maps each exact registered `payload.indices`
-tuple to one tuple in the declared `index_names` order. This mapping is supplied
-by the model or report consumer: JCGEOutput does not infer indices from encoded
-symbol names.
-
-The mapping is validated when it is used. By default every registered instance
-selected by `(source_block, source_tag)` must have one coordinate, and every
-declared coordinate must select an existing instance. `report_block` and
-`report_tag` optionally provide a canonical report grouping without changing the
-registered model equations.
-
-`domain_values` explicitly maps concrete values in `ESum` and `EProd` domains
-to their report labels. It is required when those domains otherwise retain
-region-encoded identifiers after a multi-region formula is grouped.
-
-`index_projections` maps source `EIndex` names in the registered expression
-tree to one or more declared report indices. It is useful when a source index
-such as `:activity` or `:quantity` represents several report dimensions.
-
-`reference_indices` maps an exact variable or parameter reference to its report
-indices. Its keys are `(kind, name, source_indices)`, where `kind` is
-`:variable` or `:parameter`; values contain one tuple of report-index names per
-source index position. It handles explicit additive terms whose identifiers
-cannot be inferred from the equation's outer indices.
+Explicitly declare how registered equation instances are represented by report
+indices. `coordinates` maps exact registered index tuples to report coordinates;
+the model or report consumer supplies and validates this mapping. `domain_values`,
+`index_projections`, and `reference_indices` map explicit source values to report
+indices without relying on encoded identifiers. `additive_sums` replaces declared
+enumerated additive expressions by validated indexed sums in the report.
 """
 struct EquationReportMapping
     source_block::Symbol
@@ -886,11 +911,13 @@ struct EquationReportMapping
     domain_values::Dict{Symbol,Symbol}
     index_projections::Dict{Symbol,Tuple{Vararg{Symbol}}}
     reference_indices::Dict{Tuple{Symbol,Symbol,Tuple},Tuple}
+    additive_sums::Vector{AdditiveSumMapping}
 end
 
 function EquationReportMapping(; source_block, source_tag, report_block=source_block,
     report_tag=source_tag, index_names, coordinates, domain_values=Dict(),
-    index_projections=Dict(), reference_indices=Dict())
+    index_projections=Dict(), reference_indices=Dict(),
+    additive_sums=AdditiveSumMapping[])
     names = Tuple(Symbol.(collect(index_names)))
     isempty(names) && throw(ArgumentError("report mapping `index_names` cannot be empty"))
     length(unique(names)) == length(names) ||
@@ -946,9 +973,18 @@ function EquationReportMapping(; source_block, source_tag, report_block=source_b
             "duplicate report reference mapping for $(key)"))
         mapped_references[key] = positions
     end
+    mapped_additive_sums = AdditiveSumMapping[]
+    for mapping in additive_sums
+        mapping isa AdditiveSumMapping || throw(ArgumentError(
+            "`additive_sums` entries must be AdditiveSumMapping values"))
+        push!(mapped_additive_sums, mapping)
+    end
+    paths = [mapping.path for mapping in mapped_additive_sums]
+    length(unique(paths)) == length(paths) || throw(ArgumentError(
+        "additive-sum mapping paths must be unique within an equation report mapping"))
     return EquationReportMapping(Symbol(source_block), Symbol(source_tag), Symbol(report_block),
         Symbol(report_tag), names, mapped_coordinates, mapped_domains,
-        mapped_index_projections, mapped_references)
+        mapped_index_projections, mapped_references, mapped_additive_sums)
 end
 
 """
@@ -1723,6 +1759,184 @@ function _report_mapping_lookup(mappings)
     return lookup
 end
 
+function _expression_at_path(expr::EquationExpr, path::Tuple{Vararg{Any}})
+    isempty(path) && return expr
+    step = first(path)
+    remaining = Tuple(path[2:end])
+    if expr isa EEq || expr isa ELe || expr isa EGe
+        step === :lhs && return _expression_at_path(expr.lhs, remaining)
+        step === :rhs && return _expression_at_path(expr.rhs, remaining)
+    elseif expr isa EAdd
+        step === :term || throw(ArgumentError("expected `:term` in additive expression path"))
+        isempty(remaining) && throw(ArgumentError("additive expression path is missing a term position"))
+        position = first(remaining)
+        position isa Integer || throw(ArgumentError(
+            "additive expression path term position must be an integer"))
+        1 <= position <= length(expr.terms) || throw(ArgumentError(
+            "additive expression path term position $(position) is out of bounds"))
+        return _expression_at_path(expr.terms[position], Tuple(remaining[2:end]))
+    elseif expr isa EMul
+        step === :factor || throw(ArgumentError("expected `:factor` in multiplicative expression path"))
+        isempty(remaining) && throw(ArgumentError(
+            "multiplicative expression path is missing a factor position"))
+        position = first(remaining)
+        position isa Integer || throw(ArgumentError(
+            "multiplicative expression path factor position must be an integer"))
+        1 <= position <= length(expr.factors) || throw(ArgumentError(
+            "multiplicative expression path factor position $(position) is out of bounds"))
+        return _expression_at_path(expr.factors[position], Tuple(remaining[2:end]))
+    elseif expr isa EPow
+        step === :base && return _expression_at_path(expr.base, remaining)
+        step === :exponent && return _expression_at_path(expr.exponent, remaining)
+    elseif expr isa EDiv
+        step === :numerator && return _expression_at_path(expr.numerator, remaining)
+        step === :denominator && return _expression_at_path(expr.denominator, remaining)
+    elseif expr isa ENeg || expr isa ELog || expr isa ESum || expr isa EProd
+        step === :expression && return _expression_at_path(expr.expr, remaining)
+    end
+    throw(ArgumentError("expression path $(path) does not select a valid expression node"))
+end
+
+function _replace_expression_at_path(expr::EquationExpr, path::Tuple{Vararg{Any}}, replacement)
+    isempty(path) && return replacement(expr)
+    step = first(path)
+    remaining = Tuple(path[2:end])
+    if expr isa EEq || expr isa ELe || expr isa EGe
+        if step === :lhs
+            lhs = _replace_expression_at_path(expr.lhs, remaining, replacement)
+            return expr isa EEq ? EEq(lhs, expr.rhs) :
+                expr isa ELe ? ELe(lhs, expr.rhs) : EGe(lhs, expr.rhs)
+        elseif step === :rhs
+            rhs = _replace_expression_at_path(expr.rhs, remaining, replacement)
+            return expr isa EEq ? EEq(expr.lhs, rhs) :
+                expr isa ELe ? ELe(expr.lhs, rhs) : EGe(expr.lhs, rhs)
+        end
+    elseif expr isa EAdd
+        step === :term || throw(ArgumentError("expected `:term` in additive expression path"))
+        isempty(remaining) && throw(ArgumentError("additive expression path is missing a term position"))
+        position = first(remaining)
+        position isa Integer || throw(ArgumentError(
+            "additive expression path term position must be an integer"))
+        1 <= position <= length(expr.terms) || throw(ArgumentError(
+            "additive expression path term position $(position) is out of bounds"))
+        terms = copy(expr.terms)
+        terms[position] = _replace_expression_at_path(terms[position],
+            Tuple(remaining[2:end]), replacement)
+        return EAdd(terms)
+    elseif expr isa EMul
+        step === :factor || throw(ArgumentError("expected `:factor` in multiplicative expression path"))
+        isempty(remaining) && throw(ArgumentError(
+            "multiplicative expression path is missing a factor position"))
+        position = first(remaining)
+        position isa Integer || throw(ArgumentError(
+            "multiplicative expression path factor position must be an integer"))
+        1 <= position <= length(expr.factors) || throw(ArgumentError(
+            "multiplicative expression path factor position $(position) is out of bounds"))
+        factors = copy(expr.factors)
+        factors[position] = _replace_expression_at_path(factors[position],
+            Tuple(remaining[2:end]), replacement)
+        return EMul(factors)
+    elseif expr isa EPow
+        step === :base && return EPow(_replace_expression_at_path(expr.base, remaining, replacement),
+            expr.exponent)
+        step === :exponent && return EPow(expr.base,
+            _replace_expression_at_path(expr.exponent, remaining, replacement))
+    elseif expr isa EDiv
+        step === :numerator && return EDiv(
+            _replace_expression_at_path(expr.numerator, remaining, replacement), expr.denominator)
+        step === :denominator && return EDiv(expr.numerator,
+            _replace_expression_at_path(expr.denominator, remaining, replacement))
+    elseif expr isa ENeg
+        step === :expression && return ENeg(_replace_expression_at_path(expr.expr, remaining, replacement))
+    elseif expr isa ELog
+        step === :expression && return ELog(_replace_expression_at_path(expr.expr, remaining, replacement))
+    elseif expr isa ESum
+        step === :expression && return ESum(expr.index, expr.domain,
+            _replace_expression_at_path(expr.expr, remaining, replacement))
+    elseif expr isa EProd
+        step === :expression && return EProd(expr.index, expr.domain,
+            _replace_expression_at_path(expr.expr, remaining, replacement))
+    end
+    throw(ArgumentError("expression path $(path) does not select a valid expression node"))
+end
+
+function _additive_sum_reference(expr::EquationExpr)
+    expr isa EVar || expr isa EParam || return nothing
+    isnothing(expr.idxs) && return nothing
+    kind = expr isa EVar ? :variable : :parameter
+    return (kind, expr.name, Tuple(expr.idxs))
+end
+
+function _validate_additive_sum_mapping(expr::EquationExpr, mapping::AdditiveSumMapping)
+    target = _expression_at_path(expr, mapping.path)
+    target isa EAdd || throw(ArgumentError(
+        "additive-sum mapping at $(mapping.path) must select an EAdd expression"))
+    length(target.terms) == length(mapping.domain) || throw(ArgumentError(
+        "additive-sum mapping at $(mapping.path) expects $(length(mapping.domain)) terms, " *
+        "but found $(length(target.terms))"))
+    observed = Symbol[]
+    for term in target.terms
+        reference = _additive_sum_reference(term)
+        isnothing(reference) && throw(ArgumentError(
+            "additive-sum mapping at $(mapping.path) requires direct variable or parameter terms"))
+        reference[1] == mapping.term_kind && reference[2] == mapping.term_name || throw(ArgumentError(
+            "additive-sum mapping at $(mapping.path) expected $(mapping.term_kind) " *
+            "$(mapping.term_name) terms"))
+        length(reference[3]) >= mapping.index_position || throw(ArgumentError(
+            "additive-sum mapping index position $(mapping.index_position) exceeds " *
+            "the arity of $(mapping.term_name)"))
+        value = reference[3][mapping.index_position]
+        value isa Symbol || throw(ArgumentError(
+            "additive-sum mapping at $(mapping.path) requires symbolic domain values"))
+        push!(observed, value)
+    end
+    Set(observed) == Set(mapping.domain) && length(unique(observed)) == length(observed) ||
+        throw(ArgumentError(
+            "additive-sum mapping at $(mapping.path) does not cover its declared domain exactly"))
+    return nothing
+end
+
+function _aggregate_additive_sum(expr::EquationExpr, mapping::AdditiveSumMapping)
+    target = _expression_at_path(expr, mapping.path)
+    target isa EAdd || throw(ArgumentError(
+        "additive-sum mapping at $(mapping.path) must select an EAdd expression"))
+    prototype = first(target.terms)
+    reference = _additive_sum_reference(prototype)
+    isnothing(reference) && throw(ArgumentError(
+        "additive-sum mapping at $(mapping.path) requires direct variable or parameter terms"))
+    for term in target.terms
+        candidate = _additive_sum_reference(term)
+        !isnothing(candidate) && candidate[1:2] == reference[1:2] || throw(ArgumentError(
+            "additive-sum mapping at $(mapping.path) does not have homogeneous terms"))
+        length(candidate[3]) == length(reference[3]) || throw(ArgumentError(
+            "additive-sum mapping at $(mapping.path) does not have consistent term arity"))
+        for position in eachindex(reference[3])
+            position == mapping.index_position && continue
+            candidate[3][position] == reference[3][position] || throw(ArgumentError(
+                "additive-sum mapping at $(mapping.path) changes a non-summation index"))
+        end
+    end
+    indices = Any[reference[3]...]
+    indices[mapping.index_position] = EIndex(mapping.index)
+    inner = mapping.term_kind === :variable ? EVar(mapping.term_name, indices) :
+        EParam(mapping.term_name, indices)
+    return _replace_expression_at_path(expr, mapping.path,
+        _ -> ESum(mapping.index, mapping.domain, inner))
+end
+
+function _apply_additive_sum_mappings(payload::NamedTuple,
+    mappings::Vector{AdditiveSumMapping})
+    isempty(mappings) && return payload
+    expression = get(payload, :expr, nothing)
+    expression isa EquationExpr || throw(ArgumentError(
+        "additive-sum mappings require a registered equation expression"))
+    for mapping in mappings
+        _validate_additive_sum_mapping(expression, mapping)
+    end
+    return merge(payload, (expr=foldl(_aggregate_additive_sum, mappings;
+        init=expression),))
+end
+
 function _apply_report_mappings(eqs, mappings; strict::Bool)
     isempty(mappings) && return eqs
     lookup = _report_mapping_lookup(mappings)
@@ -1754,6 +1968,8 @@ function _apply_report_mappings(eqs, mappings; strict::Bool)
         mapped_payload = _map_payload_report_values(payload, mapping.domain_values,
             mapping.index_projections, mapping.reference_indices, used_domains[selector],
             used_index_projections[selector], used_references[selector])
+        mapped_payload = _apply_additive_sum_mappings(mapped_payload,
+            mapping.additive_sums)
         mapped_payload = merge(mapped_payload, (index_names=mapping.index_names,
             indices=mapping.coordinates[source_indices]))
         push!(remapped, merge(eq, (block=mapping.report_block, tag=mapping.report_tag,
