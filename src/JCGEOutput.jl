@@ -742,7 +742,7 @@ end
 
 """
     render_equations(obj; format=:markdown, level=:block, view=:expanded,
-        show_defs=true, show_condition_roles=false)
+        show_defs=true, show_condition_roles=false, latex_width=100)
 
 Render equations registered in a `KernelContext` or run result.
 
@@ -755,28 +755,30 @@ Inputs
   equation families.
 - `show_defs`: include equation labels and block tags.
 - `show_condition_roles`: append each equation's closure role to its label.
+- `latex_width`: approximate maximum rendered width for each LaTeX equation line.
 
 Returns a formatted string. The output is derived from the equation AST, not
 solver-specific objects, so it is backend-agnostic.
 """
 function render_equations(obj; format::Symbol=:markdown, level::Symbol=:block,
-    view::Symbol=:expanded, show_defs::Bool=true, show_condition_roles::Bool=false)
+    view::Symbol=:expanded, show_defs::Bool=true, show_condition_roles::Bool=false,
+    latex_width::Int=100)
     ctx = _context(obj)
     eqs = JCGERuntime.list_equations(ctx)
     if view == :family
         return _render_equation_families(_equation_families(eqs); format=format,
             level=level, show_defs=show_defs,
-            show_condition_roles=show_condition_roles)
+            show_condition_roles=show_condition_roles, latex_width=latex_width)
     elseif view != :expanded
         error("Unsupported view: $(view). Use :expanded or :family")
     end
     return _render_equations(eqs; format=format, level=level, show_defs=show_defs,
-        show_condition_roles=show_condition_roles)
+        show_condition_roles=show_condition_roles, latex_width=latex_width)
 end
 
 """
     render_block(obj, block_id; format=:markdown, view=:expanded,
-        show_defs=true, show_condition_roles=false)
+        show_defs=true, show_condition_roles=false, latex_width=100)
 
 Render equations for one block.
 
@@ -787,7 +789,7 @@ Render equations for one block.
 default `:expanded` view retains every instance.
 """
 function render_block(obj, block_id; format::Symbol=:markdown, view::Symbol=:expanded,
-    show_defs::Bool=true, show_condition_roles::Bool=false)
+    show_defs::Bool=true, show_condition_roles::Bool=false, latex_width::Int=100)
     ctx = _context(obj)
     eqs = JCGERuntime.list_equations(ctx)
     block_sym = Symbol(block_id)
@@ -795,12 +797,13 @@ function render_block(obj, block_id; format::Symbol=:markdown, view::Symbol=:exp
     if view == :family
         return _render_equation_families(_equation_families(eqs_block); format=format,
             level=:equation, show_defs=show_defs,
-            show_condition_roles=show_condition_roles)
+            show_condition_roles=show_condition_roles, latex_width=latex_width)
     elseif view != :expanded
         error("Unsupported view: $(view). Use :expanded or :family")
     end
     return _render_equations(eqs_block; format=format, level=:equation,
-        show_defs=show_defs, show_condition_roles=show_condition_roles)
+        show_defs=show_defs, show_condition_roles=show_condition_roles,
+        latex_width=latex_width)
 end
 
 """
@@ -1030,7 +1033,7 @@ end
     render_equation_report(obj; format=:latex, view=:family,
         show_defs=true, show_condition_roles=false,
         include_solver_annotations=false, report_mappings=EquationReportMapping[],
-        strict_report_mappings=true)
+        strict_report_mappings=true, latex_width=100)
 
 Render a model-derived equation report. `view=:family` gives one display for
 each exact registered equation family and its number of instances;
@@ -1050,12 +1053,16 @@ registry audit.
 `report_mappings` is accepted only by `view=:indexed`. It lets the report
 consumer explicitly map concrete registered instances to report indices, with
 strict coverage validation enabled by default.
+
+For LaTeX, `latex_width` is an approximate maximum rendered width for each
+equation line. Long top-level sums and products are emitted as aligned
+continuation lines on either side of an equality or inequality.
 """
 function render_equation_report(obj; format::Symbol=:latex, view::Symbol=:family,
     show_defs::Bool=true, show_condition_roles::Bool=false,
     include_solver_annotations::Bool=false,
     report_mappings::AbstractVector{<:EquationReportMapping}=EquationReportMapping[],
-    strict_report_mappings::Bool=true)
+    strict_report_mappings::Bool=true, latex_width::Int=100)
     ctx = _context(obj)
     eqs = JCGERuntime.list_equations(ctx)
     if !include_solver_annotations
@@ -1065,14 +1072,17 @@ function render_equation_report(obj; format::Symbol=:latex, view::Symbol=:family
         "`report_mappings` can only be used with `view=:indexed`")
     if view == :family
         return _render_equation_report_families(_equation_families(eqs); format=format,
-            show_defs=show_defs, show_condition_roles=show_condition_roles)
+            show_defs=show_defs, show_condition_roles=show_condition_roles,
+            latex_width=latex_width)
     elseif view == :indexed
         eqs = _apply_report_mappings(eqs, report_mappings; strict=strict_report_mappings)
         return _render_equation_report_families(_equation_templates(eqs); format=format,
-            show_defs=show_defs, show_condition_roles=show_condition_roles)
+            show_defs=show_defs, show_condition_roles=show_condition_roles,
+            latex_width=latex_width)
     elseif view == :expanded
         return _render_equation_report_expanded(eqs; format=format,
-            show_defs=show_defs, show_condition_roles=show_condition_roles)
+            show_defs=show_defs, show_condition_roles=show_condition_roles,
+            latex_width=latex_width)
     end
     error("Unsupported view: $(view). Use :expanded, :family, or :indexed")
 end
@@ -1642,7 +1652,7 @@ function _stringify_keys(dict)
 end
 
 function _render_equations(eqs; format::Symbol, level::Symbol, show_defs::Bool,
-    show_condition_roles::Bool)
+    show_condition_roles::Bool, latex_width::Int=100)
     if level != :block && level != :equation
         error("Unsupported level: $(level). Use :block or :equation")
     end
@@ -1669,12 +1679,13 @@ function _render_equations(eqs; format::Symbol, level::Symbol, show_defs::Bool,
         end
         for (block, block_eqs) in sort(collect(by_block); by=first)
             append!(lines, _render_block_section(block, block_eqs; format=format,
-                show_defs=show_defs, show_condition_roles=show_condition_roles))
+                show_defs=show_defs, show_condition_roles=show_condition_roles,
+                latex_width=latex_width))
         end
     else
         for eq in eqs
             push!(lines, _render_equation_line(eq; format=format, show_defs=show_defs,
-                show_condition_roles=show_condition_roles))
+                show_condition_roles=show_condition_roles, latex_width=latex_width))
         end
     end
     return join(lines, "\n")
@@ -2494,7 +2505,7 @@ function _equation_templates(eqs)
 end
 
 function _render_equation_families(families; format::Symbol, level::Symbol,
-    show_defs::Bool, show_condition_roles::Bool)
+    show_defs::Bool, show_condition_roles::Bool, latex_width::Int=100)
     if level != :block && level != :equation
         error("Unsupported level: $(level). Use :block or :equation")
     end
@@ -2511,7 +2522,7 @@ function _render_equation_families(families; format::Symbol, level::Symbol,
     if level == :equation
         for family in families
             append!(lines, _render_equation_family(family; format=format, show_defs=show_defs,
-                show_condition_roles=show_condition_roles))
+                show_condition_roles=show_condition_roles, latex_width=latex_width))
         end
     else
         by_block = Dict{Symbol,Vector{EquationFamily}}()
@@ -2520,14 +2531,15 @@ function _render_equation_families(families; format::Symbol, level::Symbol,
         end
         for (block, block_families) in sort(collect(by_block); by=first)
             append!(lines, _render_family_block_section(block, block_families; format=format,
-                show_defs=show_defs, show_condition_roles=show_condition_roles))
+                show_defs=show_defs, show_condition_roles=show_condition_roles,
+                latex_width=latex_width))
         end
     end
     return join(lines, "\n")
 end
 
 function _render_equation_report_families(families; format::Symbol, show_defs::Bool,
-    show_condition_roles::Bool)
+    show_condition_roles::Bool, latex_width::Int=100)
     _validate_equation_format(format)
     objectives = filter(family -> family.kind == :objective, families)
     equations = filter(family -> family.kind != :objective, families)
@@ -2539,18 +2551,18 @@ function _render_equation_report_families(families; format::Symbol, show_defs::B
     if !isempty(objectives)
         append!(lines, _report_heading(format, "Objective functions", 2))
         append!(lines, _render_report_families(objectives; format=format, show_defs=show_defs,
-            show_condition_roles=show_condition_roles))
+            show_condition_roles=show_condition_roles, latex_width=latex_width))
     end
     if !isempty(equations)
         append!(lines, _report_heading(format, "Equations", 2))
         append!(lines, _render_report_families(equations; format=format, show_defs=show_defs,
-            show_condition_roles=show_condition_roles))
+            show_condition_roles=show_condition_roles, latex_width=latex_width))
     end
     return join(lines, "\n")
 end
 
 function _render_equation_report_expanded(eqs; format::Symbol, show_defs::Bool,
-    show_condition_roles::Bool)
+    show_condition_roles::Bool, latex_width::Int=100)
     _validate_equation_format(format)
     objectives = filter(eq -> _equation_expression(eq)[2] == :objective, eqs)
     equations = filter(eq -> _equation_expression(eq)[2] != :objective, eqs)
@@ -2562,12 +2574,12 @@ function _render_equation_report_expanded(eqs; format::Symbol, show_defs::Bool,
     if !isempty(objectives)
         append!(lines, _report_heading(format, "Objective functions", 2))
         append!(lines, _render_report_equations(objectives; format=format, show_defs=show_defs,
-            show_condition_roles=show_condition_roles))
+            show_condition_roles=show_condition_roles, latex_width=latex_width))
     end
     if !isempty(equations)
         append!(lines, _report_heading(format, "Equations", 2))
         append!(lines, _render_report_equations(equations; format=format, show_defs=show_defs,
-            show_condition_roles=show_condition_roles))
+            show_condition_roles=show_condition_roles, latex_width=latex_width))
     end
     return join(lines, "\n")
 end
@@ -2583,7 +2595,7 @@ function _report_heading(format::Symbol, text::AbstractString, level::Int)
 end
 
 function _render_report_families(families; format::Symbol, show_defs::Bool,
-    show_condition_roles::Bool)
+    show_condition_roles::Bool, latex_width::Int=100)
     lines = String[]
     by_block = Dict{Symbol,Vector{Any}}()
     for family in families
@@ -2591,13 +2603,14 @@ function _render_report_families(families; format::Symbol, show_defs::Bool,
     end
     for (block, block_families) in sort(collect(by_block); by=first)
         append!(lines, _render_family_block_section(block, block_families; format=format,
-            show_defs=show_defs, show_condition_roles=show_condition_roles, report=true))
+            show_defs=show_defs, show_condition_roles=show_condition_roles, report=true,
+            latex_width=latex_width))
     end
     return lines
 end
 
 function _render_report_equations(eqs; format::Symbol, show_defs::Bool,
-    show_condition_roles::Bool)
+    show_condition_roles::Bool, latex_width::Int=100)
     lines = String[]
     by_block = Dict{Symbol,Vector{NamedTuple}}()
     for eq in eqs
@@ -2613,14 +2626,14 @@ function _render_report_equations(eqs; format::Symbol, show_defs::Bool,
         end
         for eq in block_eqs
             append!(lines, _render_report_equation(eq; format=format, show_defs=show_defs,
-                show_condition_roles=show_condition_roles))
+                show_condition_roles=show_condition_roles, latex_width=latex_width))
         end
     end
     return lines
 end
 
 function _render_family_block_section(block, families; format::Symbol, show_defs::Bool,
-    show_condition_roles::Bool, report::Bool=false)
+    show_condition_roles::Bool, report::Bool=false, latex_width::Int=100)
     lines = String[]
     if format == :markdown
         push!(lines, report ? "### Block: $(block)" : "## Block: $(block)")
@@ -2632,13 +2645,14 @@ function _render_family_block_section(block, families; format::Symbol, show_defs
     end
     for family in families
         append!(lines, _render_equation_family(family; format=format, show_defs=show_defs,
-            show_condition_roles=show_condition_roles))
+            show_condition_roles=show_condition_roles, latex_width=latex_width))
     end
     return lines
 end
 
 function _render_equation_family(family; format::Symbol, show_defs::Bool,
-    show_condition_roles::Bool, label_override::Union{Nothing,String}=nothing)
+    show_condition_roles::Bool, label_override::Union{Nothing,String}=nothing,
+    latex_width::Int=100)
     lines = String[]
     label = show_defs ? something(label_override,
         _family_label(family; show_condition_role=show_condition_roles)) : ""
@@ -2664,7 +2678,8 @@ function _render_equation_family(family; format::Symbol, show_defs::Bool,
     if format == :latex
         !isempty(label) && push!(lines, "\\paragraph{$(_latex_escape(label))}")
         push!(lines, "\\begin{align*}")
-        push!(lines, _render_latex_alignment(family.expression, rendered; kind=family.kind))
+        push!(lines, _render_latex_alignment(family.expression, rendered; kind=family.kind,
+            latex_width=latex_width))
         push!(lines, "\\end{align*}")
         push!(lines, "\\noindent\\emph{$(instance_text).}\\par")
         append!(lines, _render_family_domains(family.domains; format=:latex))
@@ -2682,15 +2697,17 @@ function _render_equation_family(family; format::Symbol, show_defs::Bool,
 end
 
 function _render_report_equation(eq; format::Symbol, show_defs::Bool,
-    show_condition_roles::Bool)
+    show_condition_roles::Bool, latex_width::Int=100)
     expression, kind, sense = _equation_expression(eq)
     expression === nothing && return [_render_equation_line(eq; format=format,
-        show_defs=show_defs, show_condition_roles=show_condition_roles)]
+        show_defs=show_defs, show_condition_roles=show_condition_roles,
+        latex_width=latex_width)]
     family = EquationFamily(eq.block, eq.tag, kind, expression, sense,
         _equation_condition_role(eq), NamedTuple[eq], _collect_domains(expression))
     return _render_equation_family(family; format=format, show_defs=show_defs,
         show_condition_roles=show_condition_roles,
-        label_override=_equation_label(eq; show_condition_role=show_condition_roles))
+        label_override=_equation_label(eq; show_condition_role=show_condition_roles),
+        latex_width=latex_width)
 end
 
 function _family_label(family; show_condition_role::Bool=false)
@@ -2701,20 +2718,142 @@ function _family_label(family; show_condition_role::Bool=false)
     return label
 end
 
-function _render_latex_alignment(expression::EquationExpr, rendered::AbstractString; kind::Symbol)
+function _render_latex_alignment(expression::EquationExpr, rendered::AbstractString;
+    kind::Symbol, latex_width::Int=100)
+    latex_width >= 24 || error("`latex_width` must be at least 24 characters.")
     if kind == :equation
         if expression isa EEq
-            return string(render_expr(expression.lhs; format=:latex), " &= ",
-                render_expr(expression.rhs; format=:latex))
+            return _render_latex_relation(expression.lhs, "&=", expression.rhs;
+                latex_width=latex_width)
         elseif expression isa ELe
-            return string(render_expr(expression.lhs; format=:latex), " &\\le ",
-                render_expr(expression.rhs; format=:latex))
+            return _render_latex_relation(expression.lhs, "&\\le", expression.rhs;
+                latex_width=latex_width)
         elseif expression isa EGe
-            return string(render_expr(expression.lhs; format=:latex), " &\\ge ",
-                render_expr(expression.rhs; format=:latex))
+            return _render_latex_relation(expression.lhs, "&\\ge", expression.rhs;
+                latex_width=latex_width)
         end
     end
     return string("&\\quad ", rendered)
+end
+
+"""Render one additive or multiplicative term with its sign/operator."""
+function _latex_operator_terms(expression::EquationExpr; width::Int)
+    if expression isa EAdd
+        pieces = NamedTuple{(:inline, :continuation),Tuple{String,String}}[]
+        for (position, term) in enumerate(expression.terms)
+            negative = term isa ENeg || (term isa EConst && term.value < 0)
+            operand = term isa ENeg ? term.expr :
+                (term isa EConst && term.value < 0 ? EConst(-term.value) : term)
+            rendered = _render_latex_component(operand; width=width)
+            if position == 1
+                push!(pieces, (inline=negative ? string("-", rendered) : rendered,
+                    continuation=negative ? string("-", rendered) : rendered))
+            else
+                operator = negative ? " - " : " + "
+                continuation = negative ? "{}- " : "{}+ "
+                push!(pieces, (inline=string(operator, rendered),
+                    continuation=string(continuation, rendered)))
+            end
+        end
+        return pieces
+    elseif expression isa EMul
+        pieces = NamedTuple{(:inline, :continuation),Tuple{String,String}}[]
+        for (position, factor) in enumerate(expression.factors)
+            rendered = _wrap_if_needed(factor, _render_latex_component(factor; width=width);
+                format=:latex)
+            if position == 1
+                push!(pieces, (inline=rendered, continuation=rendered))
+            else
+                push!(pieces, (inline=string(" \\cdot ", rendered),
+                    continuation=string("{}\\cdot ", rendered)))
+            end
+        end
+        return pieces
+    end
+    rendered = _render_latex_component(expression; width=width)
+    return [(inline=rendered, continuation=rendered)]
+end
+
+"""Render a nested expression, preserving safe line breaks inside its operators."""
+function _render_latex_component(expression::EquationExpr; width::Int)
+    if expression isa EAdd || expression isa EMul
+        lines = _wrap_latex_expression(expression; width=width)
+        length(lines) == 1 && return only(lines)
+        return string("\\begin{aligned}\n", join(lines, string("\\\\", '\n')),
+            "\n\\end{aligned}")
+    elseif expression isa EDiv
+        numerator = _render_latex_component(expression.numerator; width=width)
+        denominator = _render_latex_component(expression.denominator; width=width)
+        return string("\\frac{", numerator, "}{", denominator, "}")
+    elseif expression isa EPow
+        base = _render_latex_component(expression.base; width=width)
+        base = _wrap_power_base(expression.base, base; format=:latex)
+        expression.base isa EVar || expression.base isa EParam ||
+            (base = string("{", base, "}"))
+        exponent = _render_exponent_expr(expression.exponent)
+        return string(base, "^{", exponent, "}")
+    elseif expression isa ENeg
+        inner = _render_latex_component(expression.expr; width=width)
+        return string("-", _wrap_if_needed(expression.expr, inner; format=:latex))
+    elseif expression isa ELog
+        return string("\\log\\left(",
+            _render_latex_component(expression.expr; width=width), "\\right)")
+    elseif expression isa ESum || expression isa EProd
+        operator = expression isa ESum ? "\\sum" : "\\prod"
+        index = _latex_escape(string(expression.index))
+        inner = _render_latex_component(expression.expr; width=width)
+        return string(operator, "_{", index, " \\in \\mathcal{D}_{", index, "}} ", inner)
+    end
+    return render_expr(expression; format=:latex)
+end
+
+"""Pack safe top-level operator terms into LaTeX continuation lines."""
+function _wrap_latex_expression(expression::EquationExpr; width::Int,
+    first_width::Int=width)
+    width >= 1 || error("LaTeX equation line width must be positive.")
+    first_width >= 1 || error("LaTeX equation first-line width must be positive.")
+    pieces = _latex_operator_terms(expression; width=width)
+    lines = String[]
+    current = ""
+    limit = first_width
+    for piece in pieces
+        candidate = isempty(current) ? piece.inline : string(current, piece.inline)
+        if !isempty(current) && ncodeunits(candidate) > limit
+            push!(lines, current)
+            current = piece.continuation
+            limit = width
+        else
+            current = candidate
+        end
+    end
+    isempty(current) || push!(lines, current)
+    return lines
+end
+
+"""Render an equality or inequality without letting either side overrun the line target."""
+function _render_latex_relation(lhs::EquationExpr, relation::AbstractString,
+    rhs::EquationExpr; latex_width::Int)
+    lhs_lines = _wrap_latex_expression(lhs; width=latex_width)
+    if length(lhs_lines) > 1
+        rhs_lines = _wrap_latex_expression(rhs; width=latex_width)
+        lines = [string("&\\quad ", line) for line in lhs_lines]
+        push!(lines, string(relation, " ", first(rhs_lines)))
+        append!(lines, [string("&\\quad ", line) for line in rhs_lines[2:end]])
+        return join(lines, string("\\\\", '\n'))
+    end
+    lhs_line = only(lhs_lines)
+    rhs_first_width = max(1, latex_width - ncodeunits(lhs_line) - ncodeunits(relation) - 1)
+    rhs_lines = _wrap_latex_expression(rhs; width=latex_width,
+        first_width=rhs_first_width)
+    if ncodeunits(first(rhs_lines)) > rhs_first_width
+        rhs_lines = _wrap_latex_expression(rhs; width=latex_width)
+        lines = [string("&\\quad ", lhs_line), string(relation, " ", first(rhs_lines))]
+        append!(lines, [string("&\\quad ", line) for line in rhs_lines[2:end]])
+        return join(lines, string("\\\\", '\n'))
+    end
+    lines = [string(lhs_line, " ", relation, " ", first(rhs_lines))]
+    append!(lines, [string("&\\quad ", line) for line in rhs_lines[2:end]])
+    return join(lines, string("\\\\", '\n'))
 end
 
 function _render_family_domains(domains; format::Symbol)
@@ -2851,7 +2990,7 @@ end
 Render a block heading followed by its equations.
 """
 function _render_block_section(block, eqs; format::Symbol, show_defs::Bool,
-    show_condition_roles::Bool)
+    show_condition_roles::Bool, latex_width::Int=100)
     lines = String[]
     header = "Block: $(block)"
     if format == :markdown
@@ -2863,7 +3002,7 @@ function _render_block_section(block, eqs; format::Symbol, show_defs::Bool,
     end
     for eq in eqs
         push!(lines, _render_equation_line(eq; format=format, show_defs=show_defs,
-            show_condition_roles=show_condition_roles))
+            show_condition_roles=show_condition_roles, latex_width=latex_width))
     end
     return lines
 end
@@ -2874,7 +3013,7 @@ end
 Render a single equation line with label and optional domain annotations.
 """
 function _render_equation_line(eq; format::Symbol, show_defs::Bool,
-    show_condition_roles::Bool)
+    show_condition_roles::Bool, latex_width::Int=100)
     info, is_math = _equation_info(eq; format=format)
     domains = Pair{String,Vector{String}}[]
     if format == :markdown
@@ -2895,6 +3034,13 @@ function _render_equation_line(eq; format::Symbol, show_defs::Bool,
     elseif format == :latex
         if is_math
             label_comment = isempty(label) ? "" : "% $(label)\n"
+            expression, kind, _ = _equation_expression(eq)
+            if expression isa EquationExpr && kind == :equation
+                aligned = _render_latex_alignment(expression, info; kind=kind,
+                    latex_width=latex_width)
+                return string(label_comment, "\\[\n\\begin{aligned}\n", aligned,
+                    "\n\\end{aligned}\n\\]")
+            end
             return string(label_comment, "\\[\n", info, "\n\\]")
         elseif isempty(label)
             return "% $(info)"

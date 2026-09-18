@@ -118,7 +118,7 @@ using Test
 
         latex = render_equations(ctx; format=:latex, level=:equation)
         @test occursin("\\[", latex)
-        @test occursin("supply = demand", latex)
+        @test occursin("supply &= demand", latex)
 
         report = render_equation_report(ctx; format=:latex)
         @test occursin("\\section*{Model equation report}", report)
@@ -133,6 +133,33 @@ using Test
         @test occursin("2 registered instances", report)
         @test occursin("Description only; no equation AST was registered.", report)
         @test !occursin("start supply = 1.0", report)
+
+        long_relation = EEq(EAdd([EVar(:lhs_a), EVar(:lhs_b), EVar(:lhs_c),
+                EVar(:lhs_d)]),
+            EAdd([EVar(:rhs_a), EVar(:rhs_b), EVar(:rhs_c), EVar(:rhs_d)]))
+        wrapped_relation = JCGEOutput._render_latex_alignment(long_relation,
+            render_expr(long_relation; format=:latex); kind=:equation, latex_width=24)
+        @test occursin("&\\quad lhs", wrapped_relation)
+        @test occursin("&= rhs", wrapped_relation)
+        @test occursin("&\\quad {}+ rhs", wrapped_relation)
+        @test_throws ErrorException JCGEOutput._render_latex_alignment(long_relation,
+            render_expr(long_relation; format=:latex); kind=:equation, latex_width=23)
+
+        nested_relation = EEq(EVar(:quantity), EDiv(EVar(:numerator),
+            EAdd([EMul([EVar(:component_a), EVar(:coefficient_a)]),
+                EMul([EVar(:component_b), EVar(:coefficient_b)]),
+                EMul([EVar(:component_c), EVar(:coefficient_c)])])))
+        nested_latex = JCGEOutput._render_latex_alignment(nested_relation,
+            render_expr(nested_relation; format=:latex); kind=:equation, latex_width=24)
+        @test occursin("\\frac{numerator}{\\begin{aligned}", nested_latex)
+        @test occursin("{}+ \\begin{aligned}", nested_latex)
+
+        separated_relation = EEq(EVar(:long_left_side), EVar(:long_right_side))
+        separated_latex = JCGEOutput._render_latex_alignment(separated_relation,
+            render_expr(separated_relation; format=:latex); kind=:equation, latex_width=24)
+        @test occursin("&\\quad long\\_left\\_side", separated_latex)
+        @test occursin("&= long\\_right\\_side", separated_latex)
+        @test occursin(string("\\\\", '\n'), separated_latex)
 
         audit_report = render_equation_report(ctx; format=:plain,
             include_solver_annotations=true)

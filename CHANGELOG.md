@@ -19,6 +19,8 @@ Security: For vulnerabilities.
 ### Changed
 - Long internal sum and product domains in LaTeX reports now use a wrapping
   description list instead of an overwide inline mathematical annotation.
+- LaTeX equation reports now split long top-level sums and products on either
+  side of equalities and inequalities into aligned continuation lines.
 
 ## [0.1.5] - 2026-09-10
 ### Fixed
