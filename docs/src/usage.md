@@ -31,6 +31,22 @@ are separated from equality and inequality equations. LaTeX reports use
 numerical solve rather than define the mathematical model. Set
 `include_solver_annotations=true` to audit the full registry.
 
+LaTeX reports format long relations as aligned continuation lines, including
+long top-level sums and products on either side of an equality or inequality.
+The default `latex_width=100` is an approximate rendered-line width; reduce it
+for a narrower document layout:
+
+```julia
+latex = render_equation_report(result;
+    format=:latex,
+    view=:indexed,
+    latex_width=80,
+)
+```
+
+Internal sum and product domains are also emitted in a wrapping list rather
+than as an overwide inline annotation. LaTeX output requires `amsmath`.
+
 For indexed reports whose concrete registered identifiers encode several model
 dimensions, the consumer can declare those dimensions explicitly. This avoids
 parsing identifier names and validates that every selected equation is covered:

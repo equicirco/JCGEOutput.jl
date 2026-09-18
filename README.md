@@ -66,7 +66,7 @@ render_equations(model; format=:markdown, level=:block|:equation,
                  view=:expanded|:family, show_defs=true)
 render_block(model, block_id; format=:markdown, view=:expanded|:family)
 render_equation_report(model; format=:latex, view=:family|:indexed,
-                       report_mappings=EquationReportMapping[]) # objectives and equations
+                       report_mappings=EquationReportMapping[], latex_width=100) # objectives and equations
 render_symbols(model; format=:markdown, show_values=true) # set false to omit numeric values
 render_blocks(spec; format=:markdown)
 render_sections(sections; format=:markdown)
@@ -84,6 +84,10 @@ registered equation instance. LaTeX reports use `align*` and therefore require
 the receiving document to load `amsmath`. Solver annotations (start values and
 bounds) are excluded from equation reports by default; pass
 `include_solver_annotations=true` only for a full registry audit.
+Long LaTeX relations are split into aligned continuation lines at their
+additive or multiplicative structure; `latex_width` sets their approximate
+maximum rendered-line width. Internal sum and product domains use a wrapping
+list rather than an overwide inline annotation.
 For an indexed report, `EquationReportMapping` lets the consumer explicitly map
 concrete registered index tuples to named report indices; mapping coverage is
 validated and never inferred from identifier names. Its optional `domain_values`
