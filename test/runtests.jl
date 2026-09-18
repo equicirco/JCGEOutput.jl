@@ -128,6 +128,8 @@ using Test
         @test occursin("\\sum_{i \\in \\mathcal{D}_{i}}", report)
         @test occursin("&\\le 1", report)
         @test occursin("Internal sum/product domains", report)
+        @test occursin("\\begin{description}", report)
+        @test occursin("\\texttt{a}", report)
         @test occursin("2 registered instances", report)
         @test occursin("Description only; no equation AST was registered.", report)
         @test !occursin("start supply = 1.0", report)
@@ -284,7 +286,8 @@ using Test
         sum_report = render_equation_report(regional_sum; format=:latex, view=:indexed,
             report_mappings=[regional_sum_mapping])
         @test occursin("\\sum_{factor \\in \\mathcal{D}_{factor}}", sum_report)
-        @test occursin("factor \\in \\{LAB, CAP\\}", sum_report)
+        @test occursin("\\mathcal{D}_{factor}", sum_report)
+        @test occursin("\\texttt{LAB}, \\texttt{CAP}", sum_report)
         @test !occursin("FAC\\_DE\\_LAB", sum_report)
 
         regional_product = KernelContext()
@@ -307,7 +310,8 @@ using Test
         product_report = render_equation_report(regional_product; format=:latex,
             view=:indexed, report_mappings=[product_mapping])
         @test occursin("\\prod_{factor \\in \\mathcal{D}_{factor}}", product_report)
-        @test occursin("factor \\in \\{LAB, CAP\\}", product_report)
+        @test occursin("\\mathcal{D}_{factor}", product_report)
+        @test occursin("\\texttt{LAB}, \\texttt{CAP}", product_report)
         @test !occursin("FAC\\_FR\\_CAP", product_report)
 
         physical_link = KernelContext()

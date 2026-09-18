@@ -16,6 +16,9 @@ Security: For vulnerabilities.
   projections, and individual variable or parameter references.
 - `AdditiveSumMapping` for rendering a consumer-declared enumeration of direct
   additive terms as a validated indexed sum, without changing model equations.
+### Changed
+- Long internal sum and product domains in LaTeX reports now use a wrapping
+  description list instead of an overwide inline mathematical annotation.
 
 ## [0.1.5] - 2026-09-10
 ### Fixed

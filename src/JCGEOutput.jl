@@ -2721,9 +2721,15 @@ function _render_family_domains(domains; format::Symbol)
     isempty(domains) && return String[]
     unique_domains = unique(domains)
     if format == :latex
-        terms = ["$(_latex_escape(index)) \\in \\{$(join(_latex_escape.(domain), ", "))\\}"
-            for (index, domain) in unique_domains]
-        return ["\\noindent\\emph{Internal sum/product domains:} \\( $(join(terms, "; ")) \\)\\par"]
+        lines = ["\\noindent\\emph{Internal sum/product domains:}\\par",
+            "\\begin{description}"]
+        for (index, domain) in unique_domains
+            label = "\\(\\mathcal{D}_{$(_latex_escape(index))}\\)"
+            values = join(["\\texttt{$(_latex_escape(value))}" for value in domain], ", ")
+            push!(lines, "\\item[$(label)] $(values)")
+        end
+        push!(lines, "\\end{description}")
+        return lines
     elseif format == :markdown
         terms = ["$(index) in { $(join(domain, ", ")) }" for (index, domain) in unique_domains]
         return ["Internal sum/product domains: " * join(terms, "; ")]
